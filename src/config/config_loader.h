@@ -8,10 +8,10 @@ struct RunConfig {
     int   agent_num     = 1;            // Agent 数量
     int   max_episodes  = 100;          // 最大 Episode 数
     int   log_interval  = 100;          // 日志打印间隔（帧）
-    std::string run_id   = "local-run";
     std::string client_id = "client-0";
     std::string env_id   = "env-0";
     int session_id       = 0;
+    std::string workload;
 };
 
 // ---- 环境参数（MazeEnv 使用）----

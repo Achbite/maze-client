@@ -24,7 +24,7 @@ esac
 replay_dir="${MAZE_VIZ_OUTPUT_DIR:-${repo_dir}/log/viz}"
 replay_host="${MAZE_REPLAY_HOST:-0.0.0.0}"
 replay_port="${MAZE_REPLAY_PORT:-9004}"
-validation_id="${MAZE_VALIDATION_ID:-${MAZE_RUN_ID:-local-validation}}"
+validation_id="${MAZE_VALIDATION_ID:-local-validation}"
 
 exec python3 -u "${repo_dir}/tools/viz_player/maze_viz_server.py" \
     --dir "${replay_dir}" \

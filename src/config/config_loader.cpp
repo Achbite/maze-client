@@ -149,12 +149,12 @@ bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config) {
     out_config.run.agent_num    = SafeInt(FindValue(entries, "run", "agent_num"),    1);
     out_config.run.max_episodes = SafeInt(FindValue(entries, "run", "max_episodes"), 100);
     out_config.run.log_interval = SafeInt(FindValue(entries, "run", "log_interval"), 100);
-    std::string run_id = FindValue(entries, "run", "run_id");
     std::string client_id = FindValue(entries, "run", "client_id");
     std::string env_id = FindValue(entries, "run", "env_id");
-    if (!run_id.empty()) out_config.run.run_id = run_id;
+    std::string workload = FindValue(entries, "run", "workload");
     if (!client_id.empty()) out_config.run.client_id = client_id;
     if (!env_id.empty()) out_config.run.env_id = env_id;
+    if (!workload.empty()) out_config.run.workload = workload;
     out_config.run.session_id = SafeInt(FindValue(entries, "run", "session_id"), 0);
 
     // --- env ---
@@ -218,10 +218,6 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
     if (!env_max_steps.empty()) {
         out_config.env.max_steps = SafeInt(env_max_steps, out_config.env.max_steps);
     }
-    std::string env_run_id = GetEnvValue("MAZE_RUN_ID");
-    if (!env_run_id.empty()) {
-        out_config.run.run_id = env_run_id;
-    }
     std::string env_client_id = GetEnvValue("MAZE_CLIENT_ID");
     if (!env_client_id.empty()) {
         out_config.run.client_id = env_client_id;
@@ -233,6 +229,10 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
     std::string env_session_id = GetEnvValue("MAZE_SESSION_ID");
     if (!env_session_id.empty()) {
         out_config.run.session_id = SafeInt(env_session_id, out_config.run.session_id);
+    }
+    std::string env_workload = GetEnvValue("MAZE_WORKLOAD");
+    if (!env_workload.empty()) {
+        out_config.run.workload = env_workload;
     }
     std::string env_viz_enabled = GetEnvValue("MAZE_VIZ_ENABLED");
     if (!env_viz_enabled.empty()) {
@@ -252,10 +252,14 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
         out_config.viz.server_port = SafeInt(
             env_replay_port, out_config.viz.server_port);
     }
+    if (out_config.run.workload == "training") {
+        out_config.viz.enabled = false;
+    }
 
-    LOG_INFO("Config", "run: run_id=%s, client_id=%s, env_id=%s, session_id=%d, agent_num=%d, max_episodes=%d, log_interval=%d",
-             out_config.run.run_id.c_str(), out_config.run.client_id.c_str(),
+    LOG_INFO("Config", "run: client_id=%s, env_id=%s, session_id=%d, workload=%s, agent_num=%d, max_episodes=%d, log_interval=%d",
+             out_config.run.client_id.c_str(),
              out_config.run.env_id.c_str(), out_config.run.session_id,
+             out_config.run.workload.empty() ? "(未指定)" : out_config.run.workload.c_str(),
              out_config.run.agent_num, out_config.run.max_episodes, out_config.run.log_interval);
     LOG_INFO("Config", "env: map=%.0fx%.0f, start=(%.0f,%.0f), end=(%.0f,%.0f), map_file=%s, map_dir=%s",
              out_config.env.map_width, out_config.env.map_height,

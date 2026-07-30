@@ -25,6 +25,7 @@ chmod +x "${fake_replay}"
 MAZE_CLIENT_BIN="${fake_client}" \
 MAZE_REPLAY_BIN="${fake_replay}" \
 MAZE_VIZ_ENABLED=true \
+MAZE_DEV_PROFILE= \
 bash "${repo_dir}/run.sh" training
 
 if [ -e "${replay_marker}" ]; then
@@ -77,6 +78,7 @@ MAZE_VIZ_OUTPUT_DIR="${replay_dir}" \
 MAZE_REPLAY_PORT="${replay_port}" \
 MAZE_VALIDATION_ID="atomic-result-test" \
 MAZE_VALIDATION_RESULT_PATH="${result_path}" \
+MAZE_DEV_PROFILE= \
 bash "${repo_dir}/run.sh" model-evaluation \
     >"${test_root}/model-evaluation.out" 2>&1 &
 run_pid=$!

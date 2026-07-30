@@ -3,8 +3,12 @@
 set -u
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-workload="${1:-inference-smoke}"
-if [ "$#" -gt 0 ]; then
+workload="${1:-${MAZE_WORKLOAD:-}}"
+if [ -z "${workload}" ]; then
+    echo "workload is required: inference-smoke, training, or model-evaluation" >&2
+    exit 2
+fi
+if [ "$#" -gt 0 ] && [ "$1" = "${workload}" ]; then
     shift
 fi
 
@@ -16,6 +20,12 @@ case "${workload}" in
         exit 2
         ;;
 esac
+
+if [ -n "${MAZE_DEV_PROFILE:-}" ] &&
+   [ "${MAZE_DEV_PROFILE}" != "${workload}" ]; then
+    echo "workload ${workload} does not match dev profile ${MAZE_DEV_PROFILE}" >&2
+    exit 2
+fi
 
 default_client_bin="${repo_dir}/build/maze_client"
 if [ -x "${repo_dir}/bin/maze_client" ]; then
@@ -39,10 +49,6 @@ while [ "$#" -gt 0 ]; do
             address="${2:?--aiserver requires host:port}"
             export MAZE_AISERVER_HOST="${address%:*}"
             export MAZE_AISERVER_PORT="${address##*:}"
-            shift 2
-            ;;
-        --run-id)
-            export MAZE_RUN_ID="${2:?--run-id requires a value}"
             shift 2
             ;;
         --agents)
@@ -132,7 +138,7 @@ shutdown() {
 }
 trap shutdown EXIT TERM INT
 
-validation_id="${MAZE_VALIDATION_ID:-${MAZE_RUN_ID:-local-validation}}"
+validation_id="${MAZE_VALIDATION_ID:-local-validation}"
 if [ "${workload}" != "training" ] &&
    [ "${replay_enabled}" = "true" ]; then
     if [ ! -f "${replay_bin}" ]; then

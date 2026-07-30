@@ -40,6 +40,17 @@ static maze::TerminationReason ToProtoTerminationReason(AgentTerminationReason r
     }
 }
 
+static maze::WorkloadMode ToProtoWorkloadMode(const std::string& workload) {
+    if (workload == "training") return maze::WORKLOAD_MODE_TRAINING;
+    if (workload == "inference-smoke") {
+        return maze::WORKLOAD_MODE_INFERENCE_SMOKE;
+    }
+    if (workload == "model-evaluation") {
+        return maze::WORKLOAD_MODE_MODEL_EVALUATION;
+    }
+    return maze::WORKLOAD_MODE_UNSPECIFIED;
+}
+
 // ---- 构建可视化 JSON 数据 ----
 // 帧数据不再存储任何地图信息，只存 map_id 引用，地图文件由播放器独立加载
 static std::string BuildVizJson(const MazeEnv& env,
@@ -88,6 +99,15 @@ int main(int argc, char* argv[]) {
     const char* config_path = (argc > 1) ? argv[1] : kDefaultConfigPath;
     ClientConfig cfg;
     LoadClientConfig(config_path, cfg);
+    const maze::WorkloadMode workload_mode =
+        ToProtoWorkloadMode(cfg.run.workload);
+    if (workload_mode == maze::WORKLOAD_MODE_UNSPECIFIED) {
+        std::fprintf(
+            stderr,
+            "Client workload is required: inference-smoke, training, or "
+            "model-evaluation\n");
+        return 2;
+    }
 
     // ---- 0a. 初始化日志系统 ----
     Logger::Instance().Init("log");
@@ -115,9 +135,9 @@ int main(int argc, char* argv[]) {
         maze::InitReq req;
         req.set_agent_num(cfg.run.agent_num);
         req.set_session_id(cfg.run.session_id);
-        req.set_run_id(cfg.run.run_id);
         req.set_client_id(cfg.run.client_id);
         req.set_env_id(cfg.run.env_id);
+        req.set_workload_mode(workload_mode);
         req.set_grid_size(env.GetGridSize());
         req.set_grid_cols(env.GetGridCols());
         req.set_grid_rows(env.GetGridRows());
@@ -159,7 +179,6 @@ int main(int argc, char* argv[]) {
         LOG_INFO("Main", "===== Episode %d 开始 =====", ep);
 
         maze::BeginEpisodeReq begin_req;
-        begin_req.set_run_id(cfg.run.run_id);
         begin_req.set_session_id(cfg.run.session_id);
         begin_req.set_episode_id(ep);
         maze::EpisodeLifecycleRsp begin_rsp;
@@ -188,7 +207,6 @@ int main(int argc, char* argv[]) {
             maze::UpdateReq update_req;
             update_req.set_frame_id(env.GetFrameId());
             update_req.set_session_id(cfg.run.session_id);
-            update_req.set_run_id(cfg.run.run_id);
             update_req.set_episode_id(ep);
 
             for (int i = 0; i < env.GetAgentNum(); ++i) {
@@ -213,7 +231,6 @@ int main(int argc, char* argv[]) {
             if (!client.Update(update_req, update_rsp)) {
                 LOG_ERROR("Main", "Update RPC 失败，终止当前 Episode");
                 maze::AbortEpisodeReq abort_req;
-                abort_req.set_run_id(cfg.run.run_id);
                 abort_req.set_session_id(cfg.run.session_id);
                 abort_req.set_episode_id(ep);
                 abort_req.set_reason(maze::TERMINATION_REASON_CHAIN_FAILURE);
@@ -286,7 +303,6 @@ int main(int argc, char* argv[]) {
 
         if (g_stop_requested.load()) {
             maze::AbortEpisodeReq abort_req;
-            abort_req.set_run_id(cfg.run.run_id);
             abort_req.set_session_id(cfg.run.session_id);
             abort_req.set_episode_id(ep);
             abort_req.set_reason(maze::TERMINATION_REASON_CLIENT_ABORT);
@@ -316,7 +332,6 @@ int main(int argc, char* argv[]) {
             maze::EpisodeEndReq ep_end_req;
             ep_end_req.set_episode_id(ep);
             ep_end_req.set_session_id(cfg.run.session_id);
-            ep_end_req.set_run_id(cfg.run.run_id);
 
             maze::EpisodeEndRsp ep_end_rsp;
             if (!client.EndEpisode(ep_end_req, ep_end_rsp) ||

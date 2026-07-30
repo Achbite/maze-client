@@ -12,6 +12,16 @@ dev_image="rl-training/maze-client-dev:${tag}"
 replay_host_port=9004
 replay_tunnel_socket="${TMPDIR:-/tmp}/rl-training-client-dev-9004.sock"
 colima_ssh_config="${RL_COLIMA_SSH_CONFIG:-${HOME}/.colima/_lima/colima/ssh.config}"
+profile="${CLIENT_DEV_PROFILE:-${PROFILE:-training}}"
+
+case "${profile}" in
+    training|inference-smoke|model-evaluation)
+        ;;
+    *)
+        echo "invalid CLIENT_DEV_PROFILE: ${profile}" >&2
+        exit 2
+        ;;
+esac
 
 tcp_ready() {
     nc -z 127.0.0.1 "${replay_host_port}" >/dev/null 2>&1
@@ -90,20 +100,40 @@ ensure_container() {
     if ! docker network inspect "${network_name}" >/dev/null 2>&1; then
         docker network create "${network_name}" >/dev/null
     fi
+    if docker container inspect "${container_name}" >/dev/null 2>&1; then
+        existing_profile="$(
+            docker inspect --format \
+                '{{index .Config.Labels "rl-training.dev_profile"}}' \
+                "${container_name}"
+        )"
+        if [ "${existing_profile}" != "${profile}" ]; then
+            docker rm --force "${container_name}" >/dev/null
+        fi
+    fi
     if ! docker container inspect "${container_name}" >/dev/null 2>&1; then
-        docker run --detach \
+        run_args=(
+            --detach
             --name "${container_name}" \
             --network "${network_name}" \
             --network-alias "${container_name}" \
             --network-alias "maze-client" \
-            --publish "127.0.0.1:${replay_host_port}:9004" \
+            --label "rl-training.dev_profile=${profile}" \
+            --env "MAZE_DEV_PROFILE=${profile}" \
             --env MAZE_REPLAY_PORT=9004 \
             --volume "${repo_dir}:/workspace/maze-client" \
-            "${dev_image}" >/dev/null
+        )
+        if [ "${profile}" != "training" ]; then
+            run_args+=(--publish "127.0.0.1:${replay_host_port}:9004")
+        fi
+        docker run "${run_args[@]}" "${dev_image}" >/dev/null
     elif [ "$(docker inspect --format '{{.State.Running}}' "${container_name}")" != "true" ]; then
         docker start "${container_name}" >/dev/null
     fi
-    ensure_replay_transport
+    if [ "${profile}" = "training" ]; then
+        stop_replay_transport
+    else
+        ensure_replay_transport
+    fi
 }
 
 case "${action}" in
@@ -128,10 +158,14 @@ case "${action}" in
              bash tests/replay_mode_test.sh"
         ;;
     replay)
+        if [ "${profile}" = "training" ]; then
+            echo "Replay is unavailable in the training dev profile" >&2
+            exit 2
+        fi
         ensure_container
         printf 'Replay URL: http://127.0.0.1:%s/\n' "${replay_host_port}"
         exec docker exec -it "${container_name}" bash -lc \
-            "cd /workspace/maze-client && exec bash ./replay.sh inference-smoke"
+            "cd /workspace/maze-client && exec bash ./replay.sh ${profile}"
         ;;
     clean)
         if docker container inspect "${container_name}" >/dev/null 2>&1; then
