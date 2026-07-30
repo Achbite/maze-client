@@ -1,0 +1,36 @@
+# ============================================================================
+# Client 配置文件 - 迷宫训练框架
+# 说明：所有运行参数、环境参数、网络参数集中管理
+#       修改后无需重新编译，重启 Client 即可生效
+# ============================================================================
+
+# --- 运行参数（控制训练流程）---
+run:
+  agent_num: 4                    # Agent 数量，同一 Episode 中并行训练的智能体个数
+  max_episodes: 100               # 最大 Episode 数，训练总轮数上限
+  log_interval: 10                # 日志打印间隔（帧），每隔多少帧输出一次状态日志
+
+# --- 环境参数（MazeEnv 使用，定义迷宫世界的物理规格）---
+env:
+  map_width: 20000.0              # 地图宽度 (cm)，X 轴方向的可活动范围
+  map_height: 20000.0             # 地图高度 (cm)，Y 轴方向的可活动范围
+  grid_size: 500                  # 网格大小 (cm)，将连续坐标离散化为网格，每格 500cm
+  max_steps: 10000                # 最大步数，单个 Episode 内的帧数上限，超过则判定超时
+  start_x: 500.0                  # 起点 X 坐标 (cm)，Agent 每个 Episode 的初始 X 位置
+  start_y: 500.0                  # 起点 Y 坐标 (cm)，Agent 每个 Episode 的初始 Y 位置
+  end_x: 19500.0                  # 终点 X 坐标 (cm)，目标点的 X 位置
+  end_y: 19500.0                  # 终点 Y 坐标 (cm)，目标点的 Y 位置
+  map_file: ""                    # 地图 JSON 文件路径（为空则从 map_dir 随机选取或使用默认墙壁，示例: "maps/save/maze_42.json"）
+  map_dir: "maps/test"            # 地图目录路径，目录下有 .json 文件则随机选取一个加载（优先级低于 map_file）
+
+# --- 网络参数（Client 与 AIServer 的 gRPC 通信配置）---
+network:
+  server_host: "maze-aiserver"     # AIServer 地址，Docker 环境使用服务名（Compose DNS 自动解析）
+  server_port: 9002               # AIServer gRPC 端口，需与 AIServer 监听端口一致
+
+# --- 可视化参数（帧数据记录 + HTTP 回放服务）---
+viz:
+  enabled: true                   # 是否启用帧数据记录
+  output_dir: "log/viz"           # 记录文件输出目录
+  interval: 1                     # 记录间隔（帧），每隔多少帧记录一次
+  server_port: 9004               # 可视化 HTTP 服务端口，浏览器通过 http://localhost:9004 访问

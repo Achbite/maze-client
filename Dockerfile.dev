@@ -1,0 +1,20 @@
+ARG CLIENT_RUNTIME_IMAGE=rl-training/maze-client:test-001
+FROM ${CLIENT_RUNTIME_IMAGE}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    libabsl-dev \
+    libgrpc++-dev \
+    libprotobuf-dev \
+    make \
+    ninja-build \
+    pkg-config \
+    protobuf-compiler \
+    protobuf-compiler-grpc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/maze-client
+ENTRYPOINT []
+CMD ["sleep", "infinity"]

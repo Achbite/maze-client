@@ -1,0 +1,1331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>迷宫训练框架 - 可视化回放</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f1923;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header */
+.header {
+    background: linear-gradient(135deg, #1a2332 0%, #0d1b2a 100%);
+    border-bottom: 1px solid #2a3a4a;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.header h1 {
+    font-size: 18px;
+    color: #4fc3f7;
+    font-weight: 600;
+}
+.header h1 span { color: #ff9800; }
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.status-dot.connected { background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+.status-dot.disconnected { background: #f44336; box-shadow: 0 0 6px #f44336; }
+.status-text { font-size: 13px; color: #78909c; }
+
+/* Main layout */
+.main {
+    display: flex;
+    flex: 1;
+    padding: 16px;
+    gap: 16px;
+}
+
+/* Canvas container */
+.canvas-container {
+    flex: 1;
+    background: #1a2332;
+    border: 1px solid #2a3a4a;
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+}
+canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* Info panel */
+.info-panel {
+    width: 300px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.card {
+    background: #1a2332;
+    border: 1px solid #2a3a4a;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.card-header {
+    padding: 10px 16px;
+    background: #1e2d3d;
+    border-bottom: 1px solid #2a3a4a;
+    font-size: 14px;
+    font-weight: 600;
+    color: #b0bec5;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.card-body { padding: 12px 16px; }
+
+/* Info items */
+.info-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 13px;
+}
+.info-label { color: #607d8b; }
+.info-value { color: #eceff1; font-weight: 500; }
+.info-value.success { color: #4caf50; }
+
+/* Agent list */
+.agent-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: #0f1923;
+    margin-bottom: 4px;
+    font-size: 13px;
+}
+.agent-color {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.agent-name { font-weight: 500; min-width: 60px; }
+.agent-pos { color: #78909c; font-size: 12px; }
+.agent-status { font-size: 11px; margin-left: auto; }
+.agent-status.done { color: #4caf50; }
+.agent-status.active { color: #4fc3f7; }
+
+/* File selector */
+.file-selector {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.file-selector select {
+    width: 100%;
+    background: #0f1923;
+    border: 1px solid #2a3a4a;
+    color: #e0e0e0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+}
+.file-selector select:focus {
+    border-color: #4fc3f7;
+    outline: none;
+}
+.file-meta {
+    font-size: 12px;
+    color: #607d8b;
+    padding: 2px 0;
+}
+.file-meta .growing {
+    color: #ff9800;
+    font-weight: 500;
+}
+.btn-refresh {
+    padding: 4px 10px;
+    background: #1a237e;
+    color: #9fa8da;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.btn-refresh:hover { filter: brightness(1.3); }
+
+/* Playback controls */
+.playback-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.btn {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    min-width: 36px;
+    text-align: center;
+}
+.btn:hover { filter: brightness(1.15); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-play { background: #1b5e20; color: #a5d6a7; }
+.btn-step { background: #1a237e; color: #9fa8da; }
+.btn-reset { background: #4e342e; color: #bcaaa4; }
+
+/* Slider */
+.slider-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.slider-section input[type="range"] {
+    flex: 1;
+    accent-color: #4fc3f7;
+}
+.slider-label {
+    font-size: 12px;
+    color: #78909c;
+    min-width: 80px;
+    text-align: right;
+}
+
+/* Speed control */
+.speed-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+.speed-section label {
+    font-size: 12px;
+    color: #78909c;
+}
+.speed-section select {
+    background: #0f1923;
+    border: 1px solid #2a3a4a;
+    color: #e0e0e0;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+/* Legend */
+.legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 12px;
+    color: #78909c;
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.legend-box {
+    width: 14px; height: 14px;
+    border-radius: 2px;
+}
+
+/* Loading overlay */
+.loading-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(15, 25, 35, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: #4fc3f7;
+    z-index: 10;
+}
+.loading-overlay.hidden { display: none; }
+
+/* Live 按钮样式 */
+#btnLive {
+    background: #1a237e;
+    color: #9fa8da;
+    transition: all 0.2s;
+}
+#btnLive.active {
+    background: #b71c1c;
+    color: #ffcdd2;
+    animation: live-pulse 1.5s ease-in-out infinite;
+}
+@keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>🏗️ 迷宫训练框架 — <span>可视化回放</span></h1>
+    <div class="header-right">
+        <span class="status-dot disconnected" id="statusDot"></span>
+        <span class="status-text" id="statusText">未连接</span>
+    </div>
+</div>
+
+<div class="main">
+    <div class="canvas-container">
+        <canvas id="mazeCanvas"></canvas>
+        <div class="loading-overlay hidden" id="loadingOverlay">加载中...</div>
+    </div>
+
+    <div class="info-panel">
+        <!-- 文件选择 -->
+        <div class="card">
+            <div class="card-header">
+                📂 选择回放文件
+                <button class="btn-refresh" onclick="refreshFileList()">🔄 刷新</button>
+            </div>
+            <div class="card-body">
+                <div class="file-selector">
+                    <select id="fileSelect" onchange="onFileSelected(true)">
+                        <option value="">-- 请选择回放文件 --</option>
+                    </select>
+                    <div class="file-meta" id="fileMeta"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 播放控制 -->
+        <div class="card">
+            <div class="card-header">▶️ 播放控制</div>
+            <div class="card-body">
+                <div class="playback-controls">
+                    <button class="btn btn-step" id="btnPrev" onclick="stepPrev()" disabled title="上一帧">◀</button>
+                    <button class="btn btn-play" id="btnPlay" onclick="togglePlay()" disabled>▶ 播放</button>
+                    <button class="btn btn-step" id="btnNext" onclick="stepNext()" disabled title="下一帧">▶</button>
+                    <button class="btn btn-reset" id="btnReset" onclick="resetPlay()" disabled>⏮ 重置</button>
+                    <button class="btn" id="btnLive" onclick="toggleLiveMode()" style="display:none;">📡 Live</button>
+                </div>
+                <div class="slider-section">
+                    <input type="range" id="frameSlider" min="0" max="0" value="0" oninput="seekFrame(this.value)" disabled>
+                    <span class="slider-label" id="frameLabel">0 / 0</span>
+                </div>
+                <div class="speed-section">
+                    <label>播放速度:</label>
+                    <select id="speedSelect" onchange="changeSpeed()">
+                        <option value="500">0.5x</option>
+                        <option value="200">1x</option>
+                        <option value="100" selected>2x</option>
+                        <option value="50">5x</option>
+                        <option value="20">10x</option>
+                        <option value="5">50x</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- 帧信息 -->
+        <div class="card">
+            <div class="card-header">📊 帧信息</div>
+            <div class="card-body">
+                <div class="info-row">
+                    <span class="info-label">帧号</span>
+                    <span class="info-value" id="frameId">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Episode</span>
+                    <span class="info-value" id="episodeId">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">地图尺寸</span>
+                    <span class="info-value" id="mapSize">--</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">总帧数</span>
+                    <span class="info-value" id="totalFrames">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agent 列表 -->
+        <div class="card">
+            <div class="card-header">🤖 Agent 列表</div>
+            <div class="card-body" id="agentList">
+                <div style="color:#607d8b;font-size:13px;">等待选择回放文件...</div>
+            </div>
+        </div>
+
+        <!-- 图例 -->
+        <div class="card">
+            <div class="card-header">📋 图例</div>
+            <div class="card-body">
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-box" style="background:#37474f;"></div>
+                        <span>墙壁</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box" style="background:#4caf50;"></div>
+                        <span>终点</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box" style="background:#ff9800;"></div>
+                        <span>起点</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-box" style="background:#4fc3f7;border-radius:50%;"></div>
+                        <span>Agent</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================================================================
+// 全局状态
+// ============================================================================
+let frames = [];           // 当前缓冲区中的帧数据
+let bufferOffset = 0;      // 缓冲区起始帧在全局中的偏移
+let totalFrameCount = 0;   // 文件总帧数
+let currentIndex = 0;      // 当前帧索引（全局索引）
+let isPlaying = false;     // 是否正在播放
+let playTimer = null;      // 播放定时器
+let playInterval = 100;    // 播放间隔（ms）
+let isConnected = false;   // 服务器连接状态
+let fileListTimer = null;  // 文件列表自动刷新定时器
+let currentFile = '';      // 当前选中的文件名
+let latestFile = '';       // 最近发现的回放文件
+let autoFollowLatest = true;
+let cachedMap = null;      // 缓存的完整地图数据（通过 /api/map 加载）
+let currentMapId = '';     // 当前地图 ID
+let isLoading = false;     // 是否正在加载帧数据（防止重复请求）
+
+// Live 播放模式状态
+let liveMode = false;      // 是否处于 Live 模式
+let liveTimer = null;      // Live 轮询定时器
+let lastKnownLines = 0;    // 上次已知的文件总行数
+let userDragging = false;  // 用户是否正在拖拽进度条
+
+// 分页加载参数
+const BUFFER_SIZE = 400;          // 缓冲区大小（帧数）
+const PREFETCH_THRESHOLD = 100;   // 距缓冲区边界多少帧时触发预加载
+const PAGE_SIZE = 400;            // 每次请求的帧数
+
+// Agent 颜色表
+const AGENT_COLORS = [
+    '#4fc3f7', '#ff9800', '#e91e63', '#9c27b0',
+    '#00bcd4', '#8bc34a', '#ff5722', '#3f51b5',
+    '#cddc39', '#795548'
+];
+
+// 动作方向名称
+const ACTION_NAMES = ['停', '↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
+
+// 动作方向向量（用于绘制箭头，Canvas 坐标系 Y 向下）
+const ACTION_DIRS = [
+    [0, 0], [0, -1], [0.707, -0.707], [1, 0], [0.707, 0.707],
+    [0, 1], [-0.707, 0.707], [-1, 0], [-0.707, -0.707]
+];
+
+// ============================================================================
+// 服务器通信
+// ============================================================================
+
+// ---- 获取 API 基础地址 ----
+function getApiBase() {
+    return window.location.origin;
+}
+
+// ---- 检查服务器连接状态 ----
+async function checkConnection() {
+    try {
+        const resp = await fetch(getApiBase() + '/api/status', { signal: AbortSignal.timeout(3000) });
+        if (resp.ok) {
+            setConnected(true);
+            return true;
+        }
+    } catch (e) {}
+    setConnected(false);
+    return false;
+}
+
+// ---- 更新连接状态 UI ----
+function setConnected(connected) {
+    isConnected = connected;
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    if (connected) {
+        dot.className = 'status-dot connected';
+        text.textContent = '已连接';
+    } else {
+        dot.className = 'status-dot disconnected';
+        text.textContent = '未连接';
+    }
+}
+
+// ---- 刷新文件列表 ----
+async function refreshFileList() {
+    try {
+        const resp = await fetch(getApiBase() + '/api/files', { signal: AbortSignal.timeout(5000) });
+        if (!resp.ok) {
+            setConnected(false);
+            return;
+        }
+        setConnected(true);
+
+        const files = await resp.json();
+        const select = document.getElementById('fileSelect');
+        const prevValue = select.value;
+        latestFile = files.length > 0 ? files[0].name : '';
+
+        // 保留当前选中项
+        select.innerHTML = '<option value="">-- 请选择回放文件 --</option>';
+        for (const f of files) {
+            const opt = document.createElement('option');
+            opt.value = f.name;
+            let label = f.name;
+            if (f.frame_count !== null) {
+                label += ` (${f.frame_count} 帧)`;
+            }
+            if (f.is_growing) {
+                label += ' 🔴 写入中';
+            }
+            opt.textContent = label;
+            select.appendChild(opt);
+        }
+
+        // 恢复之前的选中项
+        if (prevValue) {
+            select.value = prevValue;
+        }
+
+        if (latestFile &&
+            (!currentFile ||
+             (autoFollowLatest && currentFile !== latestFile))) {
+            select.value = latestFile;
+            await onFileSelected(false);
+        }
+
+        // 如果当前选中的文件正在写入，显示 Live 按钮
+        const currentFileInfo = files.find(f => f.name === currentFile);
+        const liveBtn = document.getElementById('btnLive');
+        if (currentFileInfo && currentFileInfo.is_growing) {
+            liveBtn.style.display = 'inline-block';
+        } else if (!liveMode) {
+            liveBtn.style.display = 'none';
+        }
+    } catch (e) {
+        setConnected(false);
+    }
+}
+
+// ---- 分页加载帧数据 ----
+// append: 为 true 时追加到缓冲区末尾（预加载用），为 false 时替换缓冲区
+async function loadFrameRange(offset, limit, append = false) {
+    if (isLoading) return false;
+    isLoading = true;
+
+    try {
+        const url = `${getApiBase()}/api/frames?file=${encodeURIComponent(currentFile)}&offset=${offset}&limit=${limit}`;
+        const resp = await fetch(url, { signal: AbortSignal.timeout(60000) });
+        if (!resp.ok) {
+            isLoading = false;
+            return false;
+        }
+
+        const data = await resp.json();
+        const newFrames = data.frames || [];
+        totalFrameCount = data.total_frames;
+
+        if (append && offset === bufferOffset + frames.length) {
+            // 追加模式：拼接到缓冲区末尾
+            frames = frames.concat(newFrames);
+            // 缓冲区过大时裁剪前端（保留最近 BUFFER_SIZE * 2 帧）
+            const maxBuffer = BUFFER_SIZE * 2;
+            if (frames.length > maxBuffer) {
+                const trim = frames.length - maxBuffer;
+                frames = frames.slice(trim);
+                bufferOffset += trim;
+            }
+        } else {
+            // 替换模式
+            frames = newFrames;
+            bufferOffset = offset;
+        }
+
+        // 检测新格式：帧数据含 map_id 字段，通过 /api/map 加载地图
+        if (newFrames.length > 0 && newFrames[0].map_id && !cachedMap) {
+            await loadMapById(newFrames[0].map_id);
+        }
+
+        // 向后兼容：旧格式帧数据含 map.walls，直接缓存
+        if (!cachedMap && offset === 0 && newFrames.length > 0 && newFrames[0].map && newFrames[0].map.walls) {
+            cachedMap = JSON.parse(JSON.stringify(newFrames[0].map));
+        }
+
+        isLoading = false;
+        return true;
+    } catch (e) {
+        console.error('加载帧数据失败:', e);
+        isLoading = false;
+        return false;
+    }
+}
+
+// ---- 通过 map_id 加载地图数据 ----
+async function loadMapById(mapId) {
+    if (currentMapId === mapId && cachedMap) return;  // 已缓存
+    try {
+        const resp = await fetch(
+            `${getApiBase()}/api/map?id=${encodeURIComponent(mapId)}`,
+            { signal: AbortSignal.timeout(30000) }
+        );
+        if (resp.ok) {
+            cachedMap = await resp.json();
+            currentMapId = mapId;
+            console.log(`地图已加载: ${mapId}`);
+        } else {
+            console.error(`加载地图失败: ${mapId}`);
+        }
+    } catch (e) {
+        console.error('加载地图异常:', e);
+    }
+}
+
+// ---- 从缓冲区获取帧数据 ----
+function getFrameFromBuffer(globalIndex) {
+    const localIndex = globalIndex - bufferOffset;
+    if (localIndex >= 0 && localIndex < frames.length) {
+        return frames[localIndex];
+    }
+    return null;
+}
+
+// ---- 检查是否需要预加载 ----
+function checkPrefetch(globalIndex) {
+    const localIndex = globalIndex - bufferOffset;
+    const distToEnd = frames.length - localIndex;
+
+    // 接近缓冲区末尾，向后追加预加载
+    if (distToEnd < PREFETCH_THRESHOLD && (bufferOffset + frames.length) < totalFrameCount) {
+        const newOffset = bufferOffset + frames.length;
+        loadFrameRange(newOffset, PAGE_SIZE, true);  // 追加模式
+    }
+}
+
+// ---- 选择文件后加载帧数据 ----
+async function onFileSelected(userInitiated = false) {
+    const select = document.getElementById('fileSelect');
+    const filename = select.value;
+    if (!filename) return;
+
+    if (userInitiated) {
+        autoFollowLatest = filename === latestFile;
+    }
+
+    pausePlay();
+    stopLiveMode();
+    currentFile = filename;
+    cachedMap = null;
+    currentMapId = '';
+    showLoading(true, '正在加载文件信息...');
+
+    try {
+        // 1. 获取文件状态（总行数 + 是否在写入）
+        //    首次打开大文件时服务端需构建行偏移索引，可能耗时较长，超时设为 120 秒
+        const statusResp = await fetch(
+            `${getApiBase()}/api/file_status?file=${encodeURIComponent(filename)}`,
+            { signal: AbortSignal.timeout(120000) }
+        );
+        if (!statusResp.ok) {
+            const err = await statusResp.json();
+            alert('获取文件状态失败: ' + (err.error || '未知错误'));
+            showLoading(false);
+            return;
+        }
+        const fileStatus = await statusResp.json();
+        totalFrameCount = fileStatus.total_lines;
+        lastKnownLines = totalFrameCount;
+
+        if (totalFrameCount === 0) {
+            alert('文件中没有有效的帧数据');
+            showLoading(false);
+            return;
+        }
+
+        // 2. 加载首批帧数据（含首帧完整地图）
+        showLoading(true, '加载帧数据中...');
+        const success = await loadFrameRange(0, PAGE_SIZE);
+        if (!success || frames.length === 0) {
+            alert('加载帧数据失败');
+            showLoading(false);
+            return;
+        }
+
+        // 3. 更新文件元信息
+        document.getElementById('fileMeta').textContent =
+            `共 ${totalFrameCount} 帧`;
+
+        // 4. 初始化播放控制
+        currentIndex = 0;
+        document.getElementById('frameSlider').max = totalFrameCount - 1;
+        document.getElementById('frameSlider').value = 0;
+        document.getElementById('frameSlider').disabled = false;
+        document.getElementById('totalFrames').textContent = totalFrameCount;
+
+        // 启用按钮
+        document.getElementById('btnPlay').disabled = false;
+        document.getElementById('btnNext').disabled = false;
+        document.getElementById('btnPrev').disabled = false;
+        document.getElementById('btnReset').disabled = false;
+
+        // 5. 如果文件正在写入，显示 Live 按钮
+        const liveBtn = document.getElementById('btnLive');
+        if (fileStatus.is_growing) {
+            liveBtn.style.display = 'inline-block';
+        } else {
+            liveBtn.style.display = 'none';
+        }
+
+        // 6. 显示第一帧
+        showFrame(0);
+        showLoading(false);
+        if (fileStatus.is_growing) {
+            startLiveMode();
+        } else {
+            startPlay();
+        }
+    } catch (e) {
+        alert('加载失败: ' + e.message);
+        showLoading(false);
+    }
+}
+
+// ---- 显示/隐藏加载遮罩 ----
+function showLoading(show, text) {
+    const overlay = document.getElementById('loadingOverlay');
+    if (text) overlay.textContent = text;
+    else if (show) overlay.textContent = '加载中...';
+    overlay.className = show ? 'loading-overlay' : 'loading-overlay hidden';
+}
+
+// ============================================================================
+// 播放控制
+// ============================================================================
+function togglePlay() {
+    if (isPlaying) {
+        pausePlay();
+    } else {
+        startPlay();
+    }
+}
+
+function startPlay() {
+    if (totalFrameCount === 0) return;
+    isPlaying = true;
+    document.getElementById('btnPlay').textContent = '⏸ 暂停';
+
+    // 使用 setTimeout 链式调用代替 setInterval，避免异步回调堆积
+    async function playStep() {
+        if (!isPlaying) return;
+
+        if (currentIndex < totalFrameCount - 1) {
+            currentIndex++;
+            // 检查缓冲区是否命中
+            let frame = getFrameFromBuffer(currentIndex);
+            if (!frame) {
+                // 缓冲区未命中，暂停播放并加载
+                pausePlay();
+                showLoading(true, '加载帧数据中...');
+                const success = await loadFrameRange(currentIndex, PAGE_SIZE);
+                showLoading(false);
+                if (success) {
+                    showFrame(currentIndex);
+                    startPlay();
+                }
+                return;
+            }
+            showFrame(currentIndex);
+        } else if (liveMode) {
+            // Live 模式下播放到末尾，等待新帧
+        } else {
+            pausePlay();
+            return;
+        }
+
+        // 链式调用下一步
+        if (isPlaying) {
+            playTimer = setTimeout(playStep, playInterval);
+        }
+    }
+
+    playTimer = setTimeout(playStep, playInterval);
+}
+
+function pausePlay() {
+    isPlaying = false;
+    document.getElementById('btnPlay').textContent = '▶ 播放';
+    if (playTimer) {
+        clearTimeout(playTimer);
+        playTimer = null;
+    }
+}
+
+function stepNext() {
+    pausePlay();
+    if (currentIndex < totalFrameCount - 1) {
+        currentIndex++;
+        ensureFrameAndShow(currentIndex);
+    }
+}
+
+function stepPrev() {
+    pausePlay();
+    if (currentIndex > 0) {
+        currentIndex--;
+        ensureFrameAndShow(currentIndex);
+    }
+}
+
+function resetPlay() {
+    pausePlay();
+    stopLiveMode();
+    currentIndex = 0;
+    // 如果首批数据不在缓冲区，重新加载
+    if (bufferOffset !== 0) {
+        loadFrameRange(0, PAGE_SIZE).then(() => showFrame(0));
+    } else {
+        showFrame(0);
+    }
+}
+
+async function seekFrame(val) {
+    pausePlay();
+    currentIndex = parseInt(val);
+    await ensureFrameAndShow(currentIndex);
+}
+
+function changeSpeed() {
+    playInterval = parseInt(document.getElementById('speedSelect').value);
+    if (isPlaying) {
+        pausePlay();
+        startPlay();
+    }
+}
+
+// ---- 确保帧在缓冲区中并显示 ----
+async function ensureFrameAndShow(globalIndex) {
+    let frame = getFrameFromBuffer(globalIndex);
+    if (!frame) {
+        // 缓冲区未命中，以目标帧为中心加载
+        showLoading(true);
+        const loadOffset = Math.max(0, globalIndex - Math.floor(PAGE_SIZE / 4));
+        await loadFrameRange(loadOffset, PAGE_SIZE);
+        showLoading(false);
+    }
+    showFrame(globalIndex);
+}
+
+// ============================================================================
+// Live 播放模式
+// ============================================================================
+function toggleLiveMode() {
+    if (liveMode) {
+        stopLiveMode();
+    } else {
+        startLiveMode();
+    }
+}
+
+function startLiveMode() {
+    liveMode = true;
+    const btn = document.getElementById('btnLive');
+    btn.textContent = '🔴 LIVE';
+    btn.classList.add('active');
+
+    // 跳到最新帧
+    if (totalFrameCount > 0) {
+        currentIndex = totalFrameCount - 1;
+        ensureFrameAndShow(currentIndex);
+    }
+
+    // 每 500ms 轮询文件状态
+    liveTimer = setInterval(async () => {
+        if (!currentFile) return;
+
+        try {
+            const resp = await fetch(
+                `${getApiBase()}/api/file_status?file=${encodeURIComponent(currentFile)}`,
+                { signal: AbortSignal.timeout(3000) }
+            );
+            if (!resp.ok) return;
+            const status = await resp.json();
+
+            if (status.total_lines > lastKnownLines) {
+                // 有新帧，加载增量数据
+                const newOffset = lastKnownLines;
+                const newCount = status.total_lines - lastKnownLines;
+
+                const framesResp = await fetch(
+                    `${getApiBase()}/api/frames?file=${encodeURIComponent(currentFile)}&offset=${newOffset}&limit=${newCount}`,
+                    { signal: AbortSignal.timeout(10000) }
+                );
+                if (framesResp.ok) {
+                    const data = await framesResp.json();
+                    if (data.frames && data.frames.length > 0) {
+                        // 追加到缓冲区末尾（如果连续）
+                        if (newOffset === bufferOffset + frames.length) {
+                            frames = frames.concat(data.frames);
+                        } else {
+                            // 不连续，替换缓冲区为最新数据
+                            frames = data.frames;
+                            bufferOffset = newOffset;
+                        }
+                    }
+                    totalFrameCount = data.total_frames;
+                }
+
+                lastKnownLines = status.total_lines;
+
+                // 更新进度条范围
+                document.getElementById('frameSlider').max = totalFrameCount - 1;
+                document.getElementById('totalFrames').textContent = totalFrameCount;
+                document.getElementById('fileMeta').textContent = `共 ${totalFrameCount} 帧`;
+
+                // Live 模式下自动跳到最新帧（除非用户正在拖拽）
+                if (liveMode && !userDragging && !isPlaying) {
+                    currentIndex = totalFrameCount - 1;
+                    showFrame(currentIndex);
+                }
+            }
+
+            // 文件不再增长时自动退出 Live 模式
+            if (!status.is_growing) {
+                stopLiveMode();
+            }
+        } catch (e) {
+            console.error('Live 轮询失败:', e);
+        }
+    }, 500);
+}
+
+function stopLiveMode() {
+    liveMode = false;
+    const btn = document.getElementById('btnLive');
+    btn.textContent = '📡 Live';
+    btn.classList.remove('active');
+
+    if (liveTimer) {
+        clearInterval(liveTimer);
+        liveTimer = null;
+    }
+}
+
+// ============================================================================
+// 显示指定帧
+// ============================================================================
+function showFrame(index) {
+    if (index < 0 || index >= totalFrameCount) return;
+
+    const data = getFrameFromBuffer(index);
+    if (!data) return;
+
+    document.getElementById('frameSlider').value = index;
+    document.getElementById('frameLabel').textContent =
+        `${index + 1} / ${totalFrameCount}${liveMode ? ' 🔴' : ''}`;
+
+    // 更新信息面板
+    document.getElementById('frameId').textContent = data.frame_id || '--';
+    document.getElementById('episodeId').textContent = data.episode_id !== undefined ? data.episode_id : '--';
+
+    if (cachedMap) {
+        const w = cachedMap.bounds ? cachedMap.bounds.x_max : (cachedMap.width || '--');
+        const h = cachedMap.bounds ? cachedMap.bounds.y_max : (cachedMap.height || '--');
+        document.getElementById('mapSize').textContent = `${w} × ${h}`;
+    } else if (data.map) {
+        document.getElementById('mapSize').textContent = `${data.map.width} × ${data.map.height}`;
+    }
+
+    // 更新 Agent 列表
+    const agentList = document.getElementById('agentList');
+    if (data.agents && data.agents.length > 0) {
+        let html = '';
+        for (const agent of data.agents) {
+            const color = AGENT_COLORS[agent.id % AGENT_COLORS.length];
+            const statusClass = agent.done ? 'done' : 'active';
+            const statusText = agent.done ? '✓ 完成' : '● 活跃';
+            const actionName = ACTION_NAMES[agent.action_id] || '?';
+            html += `
+                <div class="agent-item">
+                    <div class="agent-color" style="background:${color};"></div>
+                    <span class="agent-name">Agent ${agent.id}</span>
+                    <span class="agent-pos">(${Math.round(agent.x)}, ${Math.round(agent.y)}) ${actionName}</span>
+                    <span class="agent-status ${statusClass}">${statusText}</span>
+                </div>
+            `;
+        }
+        agentList.innerHTML = html;
+    }
+
+    // 构建渲染数据：新格式用 cachedMap，旧格式用帧内 map + walls 补全
+    let renderData = data;
+    if (cachedMap && !data.map) {
+        // 新格式：帧数据无 map 字段，使用独立加载的地图数据构建渲染对象
+        renderData = Object.assign({}, data, {
+            map: {
+                width: cachedMap.bounds ? cachedMap.bounds.x_max : 50000,
+                height: cachedMap.bounds ? cachedMap.bounds.y_max : 50000,
+                grid_count: cachedMap.grid_count,
+                grid_size: cachedMap.grid_size,
+                start_pos: cachedMap.start_pos,
+                end_pos: cachedMap.end_pos,
+                walls: cachedMap.walls
+            }
+        });
+    } else if (data.map && !data.map.walls && cachedMap) {
+        // 旧格式过渡：帧有 map 但无 walls，从缓存补全
+        const walls = cachedMap.walls || (cachedMap.map && cachedMap.map.walls);
+        if (walls) {
+            renderData = Object.assign({}, data, {
+                map: Object.assign({}, data.map, { walls: walls })
+            });
+        }
+    }
+
+    // 触发渲染
+    renderFrame(renderData);
+
+    // 检查预加载
+    checkPrefetch(index);
+}
+
+// ============================================================================
+// Canvas 渲染
+// ============================================================================
+const canvas = document.getElementById('mazeCanvas');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas() {
+    const container = canvas.parentElement;
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+    // 重新渲染当前帧
+    const frame = getFrameFromBuffer(currentIndex);
+    if (frame) {
+        // 构建渲染数据
+        let renderData = frame;
+        if (cachedMap && !frame.map) {
+            renderData = Object.assign({}, frame, {
+                map: {
+                    width: cachedMap.bounds ? cachedMap.bounds.x_max : 50000,
+                    height: cachedMap.bounds ? cachedMap.bounds.y_max : 50000,
+                    grid_count: cachedMap.grid_count,
+                    grid_size: cachedMap.grid_size,
+                    start_pos: cachedMap.start_pos,
+                    end_pos: cachedMap.end_pos,
+                    walls: cachedMap.walls
+                }
+            });
+        } else if (frame.map && !frame.map.walls && cachedMap) {
+            const walls = cachedMap.walls || (cachedMap.map && cachedMap.map.walls);
+            if (walls) {
+                renderData = Object.assign({}, frame, {
+                    map: Object.assign({}, frame.map, { walls: walls })
+                });
+            }
+        }
+        renderFrame(renderData);
+    }
+}
+
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function renderFrame(data) {
+    const w = canvas.width;
+    const h = canvas.height;
+
+    // 清空画布
+    ctx.fillStyle = '#0f1923';
+    ctx.fillRect(0, 0, w, h);
+
+    if (!data || !data.map) {
+        ctx.fillStyle = '#607d8b';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('请选择回放文件', w / 2, h / 2);
+        return;
+    }
+
+    const map = data.map;
+    const mapW = map.width;
+    const mapH = map.height;
+
+    // 计算缩放和偏移（保持宽高比，居中显示）
+    const padding = 40;
+    const scaleX = (w - padding * 2) / mapW;
+    const scaleY = (h - padding * 2) / mapH;
+    const scale = Math.min(scaleX, scaleY);
+    const offsetX = (w - mapW * scale) / 2;
+    const offsetY = (h - mapH * scale) / 2;
+
+    // 坐标转换函数（游戏坐标 → 画布坐标，Y 轴翻转）
+    function toCanvas(gx, gy) {
+        return [
+            offsetX + gx * scale,
+            offsetY + (mapH - gy) * scale
+        ];
+    }
+
+    // ---- 1. 绘制网格 ----
+    ctx.strokeStyle = '#1a2a3a';
+    ctx.lineWidth = 0.5;
+    const gridStep = 2000;
+
+    for (let x = 0; x <= mapW; x += gridStep) {
+        const [cx, cy1] = toCanvas(x, 0);
+        const [, cy2] = toCanvas(x, mapH);
+        ctx.beginPath();
+        ctx.moveTo(cx, cy1);
+        ctx.lineTo(cx, cy2);
+        ctx.stroke();
+    }
+    for (let y = 0; y <= mapH; y += gridStep) {
+        const [cx1, cy] = toCanvas(0, y);
+        const [cx2] = toCanvas(mapW, y);
+        ctx.beginPath();
+        ctx.moveTo(cx1, cy);
+        ctx.lineTo(cx2, cy);
+        ctx.stroke();
+    }
+
+    // ---- 2. 绘制墙壁（blocked 网格实心填充，与客户端碰撞检测一致）----
+    if (map.walls) {
+        // 推算网格参数：优先使用帧数据中的 grid_count/grid_size，否则默认值
+        const gridSize = map.grid_size || 500;
+        const gridDim = map.grid_count || Math.ceil(mapW / gridSize);
+
+        // 构建 blocked 网格（与客户端 AddWallToGrid 逻辑一致）
+        const blocked = Array.from({ length: gridDim }, () => new Uint8Array(gridDim));
+        for (const wall of map.walls) {
+            const halfT = (wall.thickness || 10) * 0.5;
+            const minX = Math.min(wall.x1, wall.x2) - halfT;
+            const maxX = Math.max(wall.x1, wall.x2) + halfT;
+            const minY = Math.min(wall.y1, wall.y2) - halfT;
+            const maxY = Math.max(wall.y1, wall.y2) + halfT;
+
+            const gxMin = Math.max(0, Math.floor(minX / gridSize));
+            const gxMax = Math.min(gridDim - 1, Math.floor(maxX / gridSize));
+            const gyMin = Math.max(0, Math.floor(minY / gridSize));
+            const gyMax = Math.min(gridDim - 1, Math.floor(maxY / gridSize));
+
+            for (let gy = gyMin; gy <= gyMax; gy++) {
+                for (let gx = gxMin; gx <= gxMax; gx++) {
+                    blocked[gy][gx] = 1;
+                }
+            }
+        }
+
+        // 绘制 blocked 网格（实心填充）
+        const cellW = gridSize * scale;
+        const cellH = gridSize * scale;
+        ctx.fillStyle = '#37474f';
+        for (let gy = 0; gy < gridDim; gy++) {
+            for (let gx = 0; gx < gridDim; gx++) {
+                if (blocked[gy][gx]) {
+                    // 网格中心的连续坐标 → Canvas 坐标
+                    const worldX = gx * gridSize;
+                    const worldY = (gy + 1) * gridSize;  // 格子顶部 Y
+                    const [cx, cy] = toCanvas(worldX, worldY);
+                    ctx.fillRect(cx, cy, cellW, cellH);
+                }
+            }
+        }
+    }
+
+    // ---- 3. 绘制起点 ----
+    if (map.start_pos) {
+        const [sx, sy] = toCanvas(map.start_pos.x, map.start_pos.y);
+        const r = Math.max(6, 300 * scale);
+
+        ctx.fillStyle = 'rgba(255, 152, 0, 0.3)';
+        ctx.beginPath();
+        ctx.arc(sx, sy, r * 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ff9800';
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('S', sx, sy + 4);
+    }
+
+    // ---- 4. 绘制终点 ----
+    if (map.end_pos) {
+        const [ex, ey] = toCanvas(map.end_pos.x, map.end_pos.y);
+        const r = Math.max(6, 300 * scale);
+
+        ctx.fillStyle = 'rgba(76, 175, 80, 0.3)';
+        ctx.beginPath();
+        ctx.arc(ex, ey, r * 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#4caf50';
+        ctx.beginPath();
+        ctx.arc(ex, ey, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('E', ex, ey + 4);
+    }
+
+    // ---- 5. 绘制 Agent ----
+    if (data.agents) {
+        for (const agent of data.agents) {
+            const color = AGENT_COLORS[agent.id % AGENT_COLORS.length];
+            const [ax, ay] = toCanvas(agent.x, agent.y);
+            const r = Math.max(8, 200 * scale);
+
+            // Agent 圆点
+            ctx.fillStyle = agent.done ? 'rgba(76, 175, 80, 0.6)' : color;
+            ctx.beginPath();
+            ctx.arc(ax, ay, r, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Agent 边框
+            ctx.strokeStyle = agent.done ? '#4caf50' : '#fff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(ax, ay, r, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // 方向箭头
+            if (agent.action_id > 0 && agent.action_id <= 8) {
+                const dir = ACTION_DIRS[agent.action_id];
+                const arrowLen = r * 2.5;
+                const endX = ax + dir[0] * arrowLen;
+                const endY = ay + dir[1] * arrowLen;
+
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(ax, ay);
+                ctx.lineTo(endX, endY);
+                ctx.stroke();
+
+                const headLen = r * 0.8;
+                const angle = Math.atan2(endY - ay, endX - ax);
+                ctx.beginPath();
+                ctx.moveTo(endX, endY);
+                ctx.lineTo(endX - headLen * Math.cos(angle - 0.4), endY - headLen * Math.sin(angle - 0.4));
+                ctx.moveTo(endX, endY);
+                ctx.lineTo(endX - headLen * Math.cos(angle + 0.4), endY - headLen * Math.sin(angle + 0.4));
+                ctx.stroke();
+            }
+
+            // Agent ID 标签
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${agent.id}`, ax, ay + 3);
+        }
+    }
+
+    // ---- 6. 坐标轴标注 ----
+    ctx.fillStyle = '#546e7a';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+
+    for (let x = 0; x <= mapW; x += gridStep) {
+        const [cx, cy] = toCanvas(x, 0);
+        ctx.fillText(`${x}`, cx, cy + 14);
+    }
+
+    ctx.textAlign = 'right';
+    for (let y = 0; y <= mapH; y += gridStep) {
+        const [cx, cy] = toCanvas(0, y);
+        ctx.fillText(`${y}`, cx - 6, cy + 4);
+    }
+}
+
+// ============================================================================
+// 初始化
+// ============================================================================
+
+// 初始渲染（空画布提示）
+renderFrame(null);
+
+// 页面加载后自动连接服务器并刷新文件列表
+(async function init() {
+    const connected = await checkConnection();
+    if (connected) {
+        await refreshFileList();
+    }
+
+    // 每 5 秒自动刷新文件列表（发现新文件）
+    fileListTimer = setInterval(async () => {
+        if (isConnected) {
+            await refreshFileList();
+        } else {
+            await checkConnection();
+            if (isConnected) {
+                await refreshFileList();
+            }
+        }
+    }, 5000);
+})();
+
+// 键盘快捷键
+// 进度条拖拽事件（Live 模式下拖拽时暂停自动跟随）
+const slider = document.getElementById('frameSlider');
+slider.addEventListener('mousedown', () => { userDragging = true; });
+slider.addEventListener('mouseup', () => { userDragging = false; });
+slider.addEventListener('touchstart', () => { userDragging = true; });
+slider.addEventListener('touchend', () => { userDragging = false; });
+
+// 键盘快捷键
+document.addEventListener('keydown', (e) => {
+    if (totalFrameCount === 0) return;
+    switch (e.key) {
+        case ' ':
+            e.preventDefault();
+            togglePlay();
+            break;
+        case 'ArrowRight':
+            stepNext();
+            break;
+        case 'ArrowLeft':
+            stepPrev();
+            break;
+        case 'Home':
+            resetPlay();
+            break;
+    }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+#pragma once
+
+#include <string>
+#include <unordered_map>
+
+// ---- 运行参数（main 使用）----
+struct RunConfig {
+    int   agent_num     = 1;            // Agent 数量
+    int   max_episodes  = 100;          // 最大 Episode 数
+    int   log_interval  = 100;          // 日志打印间隔（帧）
+    std::string run_id   = "local-run";
+    std::string client_id = "client-0";
+    std::string env_id   = "env-0";
+    int session_id       = 0;
+};
+
+// ---- 环境参数（MazeEnv 使用）----
+struct EnvConfig {
+    float map_width      = 20000.0f;    // 地图宽度 (cm)
+    float map_height     = 20000.0f;    // 地图高度 (cm)
+    float grid_size      = 500.0f;      // 网格大小 (cm)，将连续坐标离散化为网格，支持浮点精度
+    int   max_steps      = 10000;       // 最大步数
+    float start_x        = 500.0f;      // 起点 X
+    float start_y        = 500.0f;      // 起点 Y
+    float end_x          = 19500.0f;    // 终点 X
+    float end_y          = 19500.0f;    // 终点 Y
+    std::string map_file;               // 地图 JSON 文件路径（为空则从 map_dir 随机选取或使用默认墙壁）
+    std::string map_dir;                // 地图目录路径（存在 .json 文件则随机选取一个，否则忽略）
+};
+
+// ---- 网络参数 ----
+struct NetworkConfig {
+    std::string server_host = "127.0.0.1";  // AIServer 地址
+    int         server_port = 9002;          // AIServer gRPC 端口
+};
+
+// ---- 可视化参数（帧数据记录 + HTTP 回放服务）----
+struct VizConfig {
+    bool        enabled     = true;              // 是否启用帧数据记录
+    std::string output_dir  = "log/viz";         // 记录文件输出目录
+    int         interval    = 1;                 // 记录间隔（帧），每隔多少帧记录一次
+    int         server_port = 9004;              // 可视化 HTTP 服务端口，浏览器通过此端口访问回放
+};
+
+// ---- 客户端完整配置 ----
+struct ClientConfig {
+    RunConfig     run;
+    EnvConfig     env;
+    NetworkConfig network;
+    VizConfig     viz;
+};
+
+// ---- 配置加载器 ----
+// 从 YAML 文件加载配置，失败时使用默认值
+bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config);
