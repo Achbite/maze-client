@@ -6,7 +6,6 @@
 
 # --- 运行参数（控制训练流程）---
 run:
-  workload: ""                    # 必须由 run.sh、环境变量或配置显式指定
   agent_num: 4                    # Agent 数量，同一 Episode 中并行训练的智能体个数
   max_episodes: 100               # 最大 Episode 数，训练总轮数上限
   log_interval: 10                # 日志打印间隔（帧），每隔多少帧输出一次状态日志
@@ -31,7 +30,6 @@ network:
 
 # --- 可视化参数（帧数据记录 + HTTP 回放服务）---
 viz:
-  enabled: true                   # 是否启用帧数据记录
   output_dir: "log/viz"           # 记录文件输出目录
   interval: 1                     # 记录间隔（帧），每隔多少帧记录一次
   server_port: 9004               # 可视化 HTTP 服务端口，浏览器通过 http://localhost:9004 访问

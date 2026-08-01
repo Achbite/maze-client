@@ -38,7 +38,22 @@ bool GrpcClient::IsConnected() const {
     return connected_;
 }
 
-// ---- 初始化 RPC ----
+bool GrpcClient::OpenSession(const maze::OpenSessionReq& req,
+                             maze::OpenSessionRsp& rsp) {
+    grpc::ClientContext context;
+    SetRpcDeadline(context);
+    grpc::Status status = stub_->OpenSession(&context, req, &rsp);
+
+    if (!status.ok()) {
+        LOG_ERROR(
+            "GrpcClient", "OpenSession RPC 失败: %s",
+            status.error_message().c_str());
+        return false;
+    }
+    return true;
+}
+
+// ---- 兼容初始化 RPC ----
 bool GrpcClient::Init(const maze::InitReq& req, maze::InitRsp& rsp) {
     grpc::ClientContext context;
     SetRpcDeadline(context);

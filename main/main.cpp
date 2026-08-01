@@ -8,9 +8,13 @@
 #include <atomic>
 #include <csignal>
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <sstream>
 #include <vector>
+#include <unistd.h>
 
 // --- 默认配置文件路径 ---
 static const char* kDefaultConfigPath = "configs/client_config.yaml";
@@ -40,15 +44,66 @@ static maze::TerminationReason ToProtoTerminationReason(AgentTerminationReason r
     }
 }
 
-static maze::WorkloadMode ToProtoWorkloadMode(const std::string& workload) {
-    if (workload == "training") return maze::WORKLOAD_MODE_TRAINING;
-    if (workload == "inference-smoke") {
-        return maze::WORKLOAD_MODE_INFERENCE_SMOKE;
+static const char* WorkloadName(maze::WorkloadMode workload) {
+    switch (workload) {
+        case maze::WORKLOAD_MODE_TRAINING:
+            return "training";
+        case maze::WORKLOAD_MODE_INFERENCE_SMOKE:
+            return "local-test";
+        case maze::WORKLOAD_MODE_MODEL_EVALUATION:
+            return "model-evaluation";
+        case maze::WORKLOAD_MODE_ASTAR_TEST:
+            return "astar-test";
+        default:
+            return "";
     }
-    if (workload == "model-evaluation") {
-        return maze::WORKLOAD_MODE_MODEL_EVALUATION;
+}
+
+static const char* ReplayPolicyName(maze::ReplayPolicy policy) {
+    switch (policy) {
+        case maze::REPLAY_POLICY_DISABLED:
+            return "disabled";
+        case maze::REPLAY_POLICY_RECORD_AND_SERVE:
+            return "record-and-serve";
+        default:
+            return "";
     }
-    return maze::WORKLOAD_MODE_UNSPECIFIED;
+}
+
+static bool PublishSessionPolicy(const std::string& workload,
+                                 const std::string& replay_policy) {
+    const char* raw_path = std::getenv("MAZE_SESSION_POLICY_PATH");
+    if (raw_path == nullptr || raw_path[0] == '\0') {
+        return true;
+    }
+
+    namespace fs = std::filesystem;
+    const fs::path path(raw_path);
+    std::error_code error;
+    if (!path.parent_path().empty()) {
+        fs::create_directories(path.parent_path(), error);
+        if (error) return false;
+    }
+
+    const fs::path temporary =
+        path.string() + ".tmp." + std::to_string(::getpid());
+    {
+        std::ofstream output(temporary);
+        if (!output) return false;
+        output << "workload=" << workload << "\n"
+               << "replay_policy=" << replay_policy << "\n";
+        output.flush();
+        if (!output) {
+            fs::remove(temporary, error);
+            return false;
+        }
+    }
+    fs::rename(temporary, path, error);
+    if (error) {
+        fs::remove(temporary, error);
+        return false;
+    }
+    return true;
 }
 
 // ---- 构建可视化 JSON 数据 ----
@@ -99,15 +154,6 @@ int main(int argc, char* argv[]) {
     const char* config_path = (argc > 1) ? argv[1] : kDefaultConfigPath;
     ClientConfig cfg;
     LoadClientConfig(config_path, cfg);
-    const maze::WorkloadMode workload_mode =
-        ToProtoWorkloadMode(cfg.run.workload);
-    if (workload_mode == maze::WORKLOAD_MODE_UNSPECIFIED) {
-        std::fprintf(
-            stderr,
-            "Client workload is required: inference-smoke, training, or "
-            "model-evaluation\n");
-        return 2;
-    }
 
     // ---- 0a. 初始化日志系统 ----
     Logger::Instance().Init("log");
@@ -130,14 +176,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ---- 4. 发送 InitReq ----
+    // ---- 4. 打开 Session 并获取服务端运行策略 ----
     {
-        maze::InitReq req;
+        maze::OpenSessionReq req;
+        req.set_session_protocol_version(1);
         req.set_agent_num(cfg.run.agent_num);
         req.set_session_id(cfg.run.session_id);
         req.set_client_id(cfg.run.client_id);
         req.set_env_id(cfg.run.env_id);
-        req.set_workload_mode(workload_mode);
+        req.set_observation_schema_id("maze.observation.v1");
+        req.set_action_schema_id("maze.action.v1");
         req.set_grid_size(env.GetGridSize());
         req.set_grid_cols(env.GetGridCols());
         req.set_grid_rows(env.GetGridRows());
@@ -157,19 +205,66 @@ int main(int argc, char* argv[]) {
         end_pos->set_x(env.GetEndX());
         end_pos->set_y(env.GetEndY());
 
-        maze::InitRsp rsp;
-        if (!client.Init(req, rsp)) {
-            LOG_ERROR("Main", "Init RPC 失败");
+        maze::OpenSessionRsp rsp;
+        if (!client.OpenSession(req, rsp)) {
+            LOG_ERROR("Main", "OpenSession RPC 失败");
             Logger::Instance().Close();
             return 1;
         }
-        LOG_INFO("Main", "初始化成功: ret_code=%d", rsp.ret_code());
-
         if (rsp.ret_code() != 0) {
-            LOG_ERROR("Main", "初始化失败，退出");
+            LOG_ERROR(
+                "Main", "OpenSession 被拒绝: %s",
+                rsp.message().c_str());
             Logger::Instance().Close();
             return 1;
         }
+        if (rsp.session_protocol_version() != 1 ||
+            rsp.observation_schema_id() != "maze.observation.v1" ||
+            rsp.action_schema_id() != "maze.action.v1") {
+            LOG_ERROR("Main", "OpenSession 返回了不兼容的协议或 schema");
+            Logger::Instance().Close();
+            return 1;
+        }
+
+        const std::string workload = WorkloadName(rsp.workload_mode());
+        const std::string replay_policy =
+            ReplayPolicyName(rsp.replay_policy());
+        if (workload.empty() || replay_policy.empty()) {
+            LOG_ERROR("Main", "OpenSession 返回了未知运行策略");
+            Logger::Instance().Close();
+            return 1;
+        }
+        const bool replay_expected =
+            rsp.workload_mode() == maze::WORKLOAD_MODE_INFERENCE_SMOKE ||
+            rsp.workload_mode() == maze::WORKLOAD_MODE_MODEL_EVALUATION;
+        if (replay_expected !=
+            (rsp.replay_policy() ==
+             maze::REPLAY_POLICY_RECORD_AND_SERVE)) {
+            LOG_ERROR("Main", "OpenSession workload 与 Replay policy 不一致");
+            Logger::Instance().Close();
+            return 1;
+        }
+        if (rsp.workload_mode() == maze::WORKLOAD_MODE_TRAINING &&
+            cfg.run.agent_num != 4) {
+            LOG_ERROR("Main", "training 要求固定 4 Agents");
+            Logger::Instance().Close();
+            return 1;
+        }
+
+        cfg.run.workload = workload;
+        cfg.viz.recording_enabled =
+            rsp.replay_policy() ==
+            maze::REPLAY_POLICY_RECORD_AND_SERVE;
+        if (!PublishSessionPolicy(workload, replay_policy)) {
+            LOG_ERROR("Main", "无法发布 Session policy");
+            Logger::Instance().Close();
+            return 1;
+        }
+        LOG_INFO(
+            "Main",
+            "Session 就绪: workload=%s replay=%s model_version=%d",
+            workload.c_str(), replay_policy.c_str(),
+            rsp.loaded_model_version());
     }
 
     // ---- 5. Episode 循环 ----
@@ -191,7 +286,7 @@ int main(int argc, char* argv[]) {
         }
 
         // 开始帧数据记录
-        if (cfg.viz.enabled) {
+        if (cfg.viz.recording_enabled) {
             viz_recorder.Begin(cfg.viz.output_dir, ep,
                                env.GetMapId(), env.GetMapFilePath());
         }
@@ -279,7 +374,7 @@ int main(int argc, char* argv[]) {
             env.AdvanceFrame();
 
             // ---- 5e. 记录帧数据（切片记录，用于离线回放）----
-            if (cfg.viz.enabled) {
+            if (cfg.viz.recording_enabled) {
                 if (env.GetFrameId() % cfg.viz.interval == 0) {
                     std::string json = BuildVizJson(env, env.GetFrameId(), ep, last_actions);
                     viz_recorder.RecordFrame(json);

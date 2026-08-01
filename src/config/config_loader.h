@@ -36,7 +36,7 @@ struct NetworkConfig {
 
 // ---- 可视化参数（帧数据记录 + HTTP 回放服务）----
 struct VizConfig {
-    bool        enabled     = true;              // 是否启用帧数据记录
+    bool        recording_enabled = false;
     std::string output_dir  = "log/viz";         // 记录文件输出目录
     int         interval    = 1;                 // 记录间隔（帧），每隔多少帧记录一次
     int         server_port = 9004;              // 可视化 HTTP 服务端口，浏览器通过此端口访问回放

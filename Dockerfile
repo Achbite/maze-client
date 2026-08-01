@@ -45,5 +45,8 @@ RUN chmod +x /opt/rl/maze-client/bin/maze_client \
     /opt/rl/maze-client/scripts/entrypoint.sh
 
 WORKDIR /opt/rl/maze-client
+ENV MAZE_SESSION_POLICY_PATH=/tmp/maze-client-session-policy
 EXPOSE 9004
+HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
+    CMD ["test", "-s", "/tmp/maze-client-session-policy"]
 ENTRYPOINT ["/opt/rl/maze-client/scripts/entrypoint.sh"]

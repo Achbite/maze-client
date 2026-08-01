@@ -3,13 +3,16 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mode="${1:-${MAZE_WORKLOAD:-inference-smoke}}"
+mode="${1:-local-test}"
 if [ "$#" -gt 0 ]; then
     shift
 fi
 
 case "${mode}" in
-    inference-smoke|model-evaluation)
+    inference-smoke)
+        mode="local-test"
+        ;;
+    local-test|model-evaluation)
         ;;
     training|train)
         echo "Replay is disabled for training" >&2

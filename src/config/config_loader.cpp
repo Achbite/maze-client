@@ -5,7 +5,6 @@
 #include <sstream>
 #include <algorithm>
 #include <vector>
-#include <cctype>
 #include <cstdlib>
 
 // ---- 去除字符串首尾空白 ----
@@ -30,17 +29,6 @@ static std::string StripQuotes(const std::string& s) {
 static int SafeInt(const std::string& val, int def) {
     if (val.empty()) return def;
     try { return std::stoi(val); } catch (...) { return def; }
-}
-
-static bool SafeBool(const std::string& val, bool def) {
-    if (val.empty()) return def;
-    std::string v = val;
-    for (char& ch : v) {
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    if (v == "true" || v == "1" || v == "yes" || v == "on") return true;
-    if (v == "false" || v == "0" || v == "no" || v == "off") return false;
-    return def;
 }
 
 static float SafeFloat(const std::string& val, float def) {
@@ -151,10 +139,8 @@ bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config) {
     out_config.run.log_interval = SafeInt(FindValue(entries, "run", "log_interval"), 100);
     std::string client_id = FindValue(entries, "run", "client_id");
     std::string env_id = FindValue(entries, "run", "env_id");
-    std::string workload = FindValue(entries, "run", "workload");
     if (!client_id.empty()) out_config.run.client_id = client_id;
     if (!env_id.empty()) out_config.run.env_id = env_id;
-    if (!workload.empty()) out_config.run.workload = workload;
     out_config.run.session_id = SafeInt(FindValue(entries, "run", "session_id"), 0);
 
     // --- env ---
@@ -187,10 +173,6 @@ bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config) {
 out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_port"), 9002);
 
     // --- viz ---
-    std::string viz_enabled = FindValue(entries, "viz", "enabled");
-    if (viz_enabled == "false" || viz_enabled == "0") {
-        out_config.viz.enabled = false;
-    }
     std::string viz_output_dir = FindValue(entries, "viz", "output_dir");
     if (!viz_output_dir.empty()) {
         out_config.viz.output_dir = viz_output_dir;
@@ -230,14 +212,6 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
     if (!env_session_id.empty()) {
         out_config.run.session_id = SafeInt(env_session_id, out_config.run.session_id);
     }
-    std::string env_workload = GetEnvValue("MAZE_WORKLOAD");
-    if (!env_workload.empty()) {
-        out_config.run.workload = env_workload;
-    }
-    std::string env_viz_enabled = GetEnvValue("MAZE_VIZ_ENABLED");
-    if (!env_viz_enabled.empty()) {
-        out_config.viz.enabled = SafeBool(env_viz_enabled, out_config.viz.enabled);
-    }
     std::string env_viz_output_dir = GetEnvValue("MAZE_VIZ_OUTPUT_DIR");
     if (!env_viz_output_dir.empty()) {
         out_config.viz.output_dir = env_viz_output_dir;
@@ -252,14 +226,9 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
         out_config.viz.server_port = SafeInt(
             env_replay_port, out_config.viz.server_port);
     }
-    if (out_config.run.workload == "training") {
-        out_config.viz.enabled = false;
-    }
-
-    LOG_INFO("Config", "run: client_id=%s, env_id=%s, session_id=%d, workload=%s, agent_num=%d, max_episodes=%d, log_interval=%d",
+    LOG_INFO("Config", "run: client_id=%s, env_id=%s, session_id=%d, agent_num=%d, max_episodes=%d, log_interval=%d",
              out_config.run.client_id.c_str(),
              out_config.run.env_id.c_str(), out_config.run.session_id,
-             out_config.run.workload.empty() ? "(未指定)" : out_config.run.workload.c_str(),
              out_config.run.agent_num, out_config.run.max_episodes, out_config.run.log_interval);
     LOG_INFO("Config", "env: map=%.0fx%.0f, start=(%.0f,%.0f), end=(%.0f,%.0f), map_file=%s, map_dir=%s",
              out_config.env.map_width, out_config.env.map_height,
@@ -269,8 +238,7 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
              out_config.env.map_dir.empty() ? "(未设置)" : out_config.env.map_dir.c_str());
     LOG_INFO("Config", "network: %s:%d",
              out_config.network.server_host.c_str(), out_config.network.server_port);
-    LOG_INFO("Config", "viz: enabled=%s, output_dir=%s, interval=%d, server_port=%d",
-             out_config.viz.enabled ? "true" : "false",
+    LOG_INFO("Config", "viz: output_dir=%s, interval=%d, server_port=%d",
              out_config.viz.output_dir.c_str(), out_config.viz.interval,
              out_config.viz.server_port);
     return true;

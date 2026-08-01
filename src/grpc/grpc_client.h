@@ -17,7 +17,8 @@ public:
     void Disconnect();                                   // 断开连接，释放 Channel 和 Stub
     bool IsConnected() const;                            // 连接状态查询
 
-    // RPC 调用（对应 MazeService 的三个方法）
+    bool OpenSession(const maze::OpenSessionReq& req,
+                     maze::OpenSessionRsp& rsp);
     bool Init(const maze::InitReq& req, maze::InitRsp& rsp);                       // 初始化
     bool BeginEpisode(const maze::BeginEpisodeReq& req, maze::EpisodeLifecycleRsp& rsp);
     bool Update(const maze::UpdateReq& req, maze::UpdateRsp& rsp);                 // 帧同步

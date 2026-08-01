@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve local inference and model-evaluation replays."""
+"""Serve local-test and model-evaluation replays."""
 
 import argparse
 import glob
@@ -447,7 +447,7 @@ def main():
                         help='本地模型验证任务 ID')
     parser.add_argument(
         '--mode',
-        choices=('inference-smoke', 'model-evaluation'),
+        choices=('local-test', 'model-evaluation'),
         default='model-evaluation',
     )
     parser.add_argument('--web-dir', default=DEFAULT_WEB_DIR,
