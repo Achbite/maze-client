@@ -11,6 +11,8 @@ context_root="${workspace_root}/.workspace/build-contexts/maze-client"
 source "${repo_dir}/artifact_versions.env"
 contract_dir="${repo_dir}/proto"
 
+bash "${repo_dir}/scripts/verify_source_inventory.sh"
+
 if [ ! -f "${contract_dir}/manifest.json" ] ||
    [ ! -f "${contract_dir}/common.pb.cc" ] ||
    [ ! -f "${contract_dir}/maze_task.pb.cc" ] ||
