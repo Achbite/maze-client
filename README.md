@@ -10,10 +10,13 @@ C++ 迷宫环境客户端。它通过 `OpenSession` 从 AIServer 获取 workload
 
 ```bash
 (cd ../rl-contracts && bash build_artifact.sh)
-cp ../.workspace/artifacts/rl-contracts/0.6.0/linux-arm64/maze.proto proto/
-cp ../.workspace/artifacts/rl-contracts/0.6.0/linux-arm64/cpp/* proto/
-cp ../.workspace/artifacts/rl-contracts/0.6.0/linux-arm64/manifest.json proto/
-CLIENT_IMAGE_TAG=training-001 bash build_image.sh
+artifact=../.workspace/artifacts/rl-contracts/0.8.0/linux-arm64
+cp "${artifact}/common.proto" "${artifact}/maze_task.proto" proto/
+cp "${artifact}"/cpp/common.pb.{cc,h} proto/
+cp "${artifact}"/cpp/maze_task.pb.{cc,h} proto/
+cp "${artifact}"/cpp/maze_task.grpc.pb.{cc,h} proto/
+cp "${artifact}/manifest.json" proto/
+RL_CLIENT_IMAGE_TAG=training-001 bash build_image.sh
 ```
 
 进入开发容器并启动推理测试：

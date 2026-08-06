@@ -10,9 +10,11 @@ fake_client="${test_root}/maze_client"
 cat >"${fake_client}" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-cat >"${MAZE_SESSION_POLICY_PATH}" <<EOF
+cat >"${RL_SESSION_POLICY_PATH}" <<EOF
 workload=${FAKE_WORKLOAD}
 replay_policy=${FAKE_REPLAY_POLICY}
+model_version=6
+model_artifact_digest=e7c005970ade5c38ab4a3f0883deb7adf8956694d6dc30be598c18954941f3d4
 EOF
 sleep "${FAKE_CLIENT_SLEEP:-0}"
 SH
@@ -27,8 +29,8 @@ exit 0
 SH
 chmod +x "${fake_replay}"
 
-MAZE_CLIENT_BIN="${fake_client}" \
-MAZE_REPLAY_BIN="${fake_replay}" \
+RL_CLIENT_BIN="${fake_client}" \
+RL_REPLAY_BIN="${fake_replay}" \
 FAKE_WORKLOAD=training \
 FAKE_REPLAY_POLICY=disabled \
 bash "${repo_dir}/run.sh"
@@ -56,8 +58,8 @@ case "${1:?workload is required}" in
         exit 2
         ;;
 esac
-: "${MAZE_REPLAY_PORT:?MAZE_REPLAY_PORT is required}"
-exec python3 -m http.server "${MAZE_REPLAY_PORT}" --bind 127.0.0.1
+: "${RL_REPLAY_PORT:?RL_REPLAY_PORT is required}"
+exec python3 -m http.server "${RL_REPLAY_PORT}" --bind 127.0.0.1
 SH
 chmod +x "${fake_replay}"
 
@@ -74,12 +76,12 @@ with socket.socket() as listener:
 PY
     )"
 
-    MAZE_CLIENT_BIN="${fake_client}" \
-    MAZE_REPLAY_BIN="${fake_replay}" \
-    MAZE_VIZ_OUTPUT_DIR="${replay_dir}" \
-    MAZE_REPLAY_PORT="${replay_port}" \
-    MAZE_VALIDATION_ID="atomic-result-test" \
-    MAZE_VALIDATION_RESULT_PATH="${result_path}" \
+    RL_CLIENT_BIN="${fake_client}" \
+    RL_REPLAY_BIN="${fake_replay}" \
+    RL_VIZ_OUTPUT_DIR="${replay_dir}" \
+    RL_REPLAY_PORT="${replay_port}" \
+    RL_VALIDATION_ID="atomic-result-test" \
+    RL_VALIDATION_RESULT_PATH="${result_path}" \
     FAKE_WORKLOAD="${workload}" \
     FAKE_REPLAY_POLICY=record-and-serve \
     bash "${repo_dir}/run.sh" \
@@ -112,6 +114,20 @@ document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert document["validation_id"] == "atomic-result-test"
 assert document["workload"] == sys.argv[2]
 assert document["exit_code"] == 0
+PY
+
+    python3 - "${replay_dir}/validation-manifest.json" "${workload}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert document["validation_id"] == "atomic-result-test"
+assert document["model"]["version"] == 6
+assert document["model"]["sha256"] == (
+    "e7c005970ade5c38ab4a3f0883deb7adf8956694d6dc30be598c18954941f3d4"
+)
+assert document["parameters"]["workload"] == sys.argv[2]
 PY
 
     if find "${replay_dir}" -name 'client-result.json.tmp.*' -print -quit |

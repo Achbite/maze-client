@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-CLIENT_IMAGE_TAG="${CLIENT_IMAGE_TAG:-training-001}"
+CLIENT_IMAGE_TAG="${RL_CLIENT_IMAGE_TAG:-training-001}"
 CLIENT_IMAGE_NAME="rl-training/maze-client"
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,8 +12,9 @@ source "${repo_dir}/artifact_versions.env"
 contract_dir="${repo_dir}/proto"
 
 if [ ! -f "${contract_dir}/manifest.json" ] ||
-   [ ! -f "${contract_dir}/maze.pb.cc" ] ||
-   [ ! -f "${contract_dir}/maze.grpc.pb.cc" ]; then
+   [ ! -f "${contract_dir}/common.pb.cc" ] ||
+   [ ! -f "${contract_dir}/maze_task.pb.cc" ] ||
+   [ ! -f "${contract_dir}/maze_task.grpc.pb.cc" ]; then
     echo "Repository-local contract snapshot is incomplete: ${contract_dir}" >&2
     exit 1
 fi
@@ -29,11 +30,14 @@ manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
 if manifest.get("package") != "rl-contracts" or manifest.get("version") != sys.argv[2]:
     raise SystemExit("Repository-local contract identity is invalid")
 files = {
-    "maze.proto": "maze.proto",
-    "cpp/maze.pb.cc": "maze.pb.cc",
-    "cpp/maze.pb.h": "maze.pb.h",
-    "cpp/maze.grpc.pb.cc": "maze.grpc.pb.cc",
-    "cpp/maze.grpc.pb.h": "maze.grpc.pb.h",
+    "common.proto": "common.proto",
+    "maze_task.proto": "maze_task.proto",
+    "cpp/common.pb.cc": "common.pb.cc",
+    "cpp/common.pb.h": "common.pb.h",
+    "cpp/maze_task.pb.cc": "maze_task.pb.cc",
+    "cpp/maze_task.pb.h": "maze_task.pb.h",
+    "cpp/maze_task.grpc.pb.cc": "maze_task.grpc.pb.cc",
+    "cpp/maze_task.grpc.pb.h": "maze_task.grpc.pb.h",
 }
 for artifact_name, local_name in files.items():
     path = root / local_name

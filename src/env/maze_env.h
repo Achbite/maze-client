@@ -3,7 +3,6 @@
 #include <vector>
 #include <cstdint>
 #include <string>
-#include <random>
 
 // 前向声明
 struct EnvConfig;
@@ -23,7 +22,6 @@ enum class AgentTerminationReason {
     Active,
     GoalReached,
     TimeLimit,
-    Countdown,
 };
 
 // --- 网格级动作方向表 ---
@@ -46,6 +44,7 @@ struct AgentInfo {
     int   grid_x  = 0;         // 网格 X 坐标
     int   grid_y  = 0;         // 网格 Y 坐标
     bool  done    = false;     // 是否已结束（到达终点或超时）
+    bool  last_move_blocked = false;
     AgentTerminationReason termination_reason = AgentTerminationReason::Active;
 };
 
@@ -56,8 +55,9 @@ struct ClientConfig;
 class MazeEnv {
 public:
     // 初始化（从配置加载所有参数）
-    void Init(const ClientConfig& config);               // 从完整配置初始化
+    bool Init(const ClientConfig& config);               // 从完整配置初始化
     void Reset();                                         // 重置所有 Agent 到起点
+    void SetMaxSteps(int max_steps);
 
     // 帧更新
     void Step(int agent_id, int action_id);               // 执行网格级移动，检查可达性
@@ -67,8 +67,6 @@ public:
     const AgentInfo& GetAgent(int agent_id) const;        // 获取 Agent 状态
     int   GetFrameId() const;                             // 当前帧号
     bool  AllDone() const;                                // 所有 Agent 是否都已结束
-    bool  HasAnyDone() const;                              // 是否有任一 Agent 已结束
-    int   GetFirstDoneFrame() const;                       // 获取首个 Agent 完成时的帧号（-1 表示无）
     int   GetAgentNum() const;                             // Agent 数量
 
     // 地图参数
@@ -79,8 +77,18 @@ public:
     float GetEndX()   const { return end_x_; }
     float GetEndY()   const { return end_y_; }
     float GetGridSize() const { return grid_size_; }
+    std::uint32_t GetGridSizeMicrounits() const;
     int   GetGridCols() const { return grid_cols_; }
     int   GetGridRows() const { return grid_rows_; }
+    int   GetStartGridX() const { return start_gx_; }
+    int   GetStartGridY() const { return start_gy_; }
+    int   GetGoalGridX() const { return end_gx_; }
+    int   GetGoalGridY() const { return end_gy_; }
+    int   GetMapFormatVersion() const { return map_format_version_; }
+    int   GetShortestActionSteps() const { return shortest_action_steps_; }
+    const std::string& GetMapChecksum() const { return map_checksum_sha256_; }
+    const std::string& GetActionRuleId() const { return action_rule_id_; }
+    std::string GetBlockedBitmap() const;
 
     // 网格坐标 → 连续坐标（网格中心，用于可视化和通信）
     float GetWorldX(int gx) const { return (gx + 0.5f) * grid_size_; }
@@ -99,10 +107,10 @@ public:
     // 获取墙壁线段列表（用于可视化 JSON 输出）
     const std::vector<WallSegment>& GetWalls() const { return walls_; }
 
-    // 获取当前加载的地图 ID（来自 JSON 的 map_id 字段，默认墙壁时为 "default"）
+    // 获取当前加载的地图 ID（来自 AIServer 指定的 registry 文件）
     const std::string& GetMapId() const { return map_id_; }
 
-    // 获取当前加载的地图文件路径（默认墙壁时为空）
+    // 获取当前加载的地图文件路径
     const std::string& GetMapFilePath() const { return loaded_map_path_; }
 
 private:
@@ -111,7 +119,7 @@ private:
     // --- 地图参数（从配置加载）---
     float map_width_      = 20000.0f;   // 地图宽度 (cm)
     float map_height_     = 20000.0f;   // 地图高度 (cm)
-    int   max_steps_      = 10000;      // 最大步数
+    int   max_steps_      = 0;          // 由 BeginEpisode 分配
     float start_x_        = 500.0f;     // 起点 X（连续坐标）
     float start_y_        = 500.0f;     // 起点 Y（连续坐标）
     float end_x_          = 19500.0f;   // 终点 X（连续坐标）
@@ -120,6 +128,7 @@ private:
 
     // --- 网格参数 ---
     float grid_size_      = 500.0f;     // 网格大小 (cm)，支持浮点精度
+    std::uint32_t grid_size_microunits_ = 0;  // canonical v4 精确整数值
     int   grid_cols_      = 0;          // 网格列数
     int   grid_rows_      = 0;          // 网格行数
     int   start_gx_       = 0;          // 起点网格 X
@@ -127,36 +136,28 @@ private:
     int   end_gx_         = 0;          // 终点网格 X
     int   end_gy_         = 0;          // 终点网格 Y
 
-    // 竞争倒计时机制
-    int   first_done_frame_ = -1;       // 首个 Agent 完成时的帧号（-1 表示尚无）
-    static constexpr int kCountdownFrames = 100;  // 首通关后倒计时帧数
-
     // --- 网格障碍物（true=不可通行）---
     std::vector<bool> blocked_;
 
     // --- 墙壁线段列表（从地图 JSON 加载，用于可视化输出）---
     std::vector<WallSegment> walls_;
 
-    // --- 地图文件/目录路径 ---
-    std::string map_file_;              // 指定的地图文件路径
-    std::string map_dir_;               // 地图目录路径（随机选取）
+    // --- AIServer 分配的地图文件 ---
+    std::string map_file_;
     std::string map_id_;                // 当前地图 ID（来自 JSON 的 map_id 字段）
     std::string loaded_map_path_;       // 实际加载的地图文件完整路径
+    int map_format_version_ = 0;
+    int shortest_action_steps_ = -1;
+    std::string map_checksum_sha256_;
+    std::string action_rule_id_ = "maze.action.9-way.no-corner-cut.v1";
+    bool has_authoritative_grid_ = false;
 
     // 从 JSON 文件加载地图数据（墙壁、起终点、尺寸、grid_size、grid_count 等）
     bool LoadMapFromFile(const std::string& filepath);
 
-    // 扫描目录并随机选取一个 .json 地图文件（map_dir 非空且 map_file 为空时调用）
-    std::string ScanAndPickMap(const std::string& dir_path);
-
-    // 加载墙壁到网格（硬编码默认墙壁，map_file 为空时使用）
-    void LoadWalls();
-
-    // 添加单面墙壁到网格
-    void AddWallToGrid(float x1, float y1, float x2, float y2, float thickness);
-
     // 终止判定
     bool CheckGoalReached(const AgentInfo& agent) const;  // 是否到达终点网格
     bool CheckTimeout() const;                             // 是否超时
-    bool CheckCountdownExpired() const;                    // 首通关后倒计时是否到期
+    int ComputeShortestActionSteps() const;
+    std::string ComputeCanonicalChecksum() const;
 };

@@ -6,16 +6,22 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
-#include <random>
-#include <dirent.h>
+#include <deque>
+#include <array>
+#include <iomanip>
+#include <limits>
+#include <openssl/evp.h>
 
 // ---- 从完整配置初始化环境 ----
-void MazeEnv::Init(const ClientConfig& config) {
+bool MazeEnv::Init(const ClientConfig& config) {
     const EnvConfig& env = config.env;
 
-    // 保存地图文件路径和目录
+    // 地图必须由 AIServer TaskSpec 精确解析，禁止随机与默认回退。
     map_file_ = env.map_file;
-    map_dir_  = env.map_dir;
+    if (map_file_.empty() || config.run.agent_num <= 0) {
+        LOG_ERROR("MazeEnv", "缺少 AIServer 分配的地图或 Agent 数");
+        return false;
+    }
 
     // 加载地图参数（先设默认值，地图文件可能覆盖）
     map_width_     = env.map_width;
@@ -26,6 +32,7 @@ void MazeEnv::Init(const ClientConfig& config) {
     end_x_         = env.end_x;
     end_y_         = env.end_y;
     grid_size_     = env.grid_size;
+    grid_size_microunits_ = 0;
 
     // 计算网格尺寸（默认值，地图文件可能覆盖）
     grid_cols_ = static_cast<int>(std::ceil(map_width_ / grid_size_));
@@ -34,54 +41,65 @@ void MazeEnv::Init(const ClientConfig& config) {
     // 初始化网格障碍物
     blocked_.assign(grid_cols_ * grid_rows_, false);
     walls_.clear();
-    map_id_ = "default";
+    map_id_.clear();
     loaded_map_path_.clear();
+    map_format_version_ = 0;
+    shortest_action_steps_ = -1;
+    map_checksum_sha256_.clear();
+    action_rule_id_ = "maze.action.9-way.no-corner-cut.v1";
+    has_authoritative_grid_ = false;
 
-    // ---- 地图加载优先级：map_file > map_dir 随机选取 > 默认墙壁 ----
-    bool map_loaded = false;
-
-    // 1. 优先使用指定的地图文件
-    if (!map_file_.empty()) {
-        if (LoadMapFromFile(map_file_)) {
-            LOG_INFO("MazeEnv", "从指定地图文件加载成功: %s", map_file_.c_str());
-            loaded_map_path_ = map_file_;
-            map_loaded = true;
-        } else {
-            LOG_WARN("MazeEnv", "指定地图文件加载失败: %s", map_file_.c_str());
-        }
+    if (!LoadMapFromFile(map_file_)) {
+        LOG_ERROR("MazeEnv", "任务地图加载失败: %s", map_file_.c_str());
+        return false;
     }
-
-    // 2. 从 map_dir 目录随机选取一个地图文件
-    if (!map_loaded && !map_dir_.empty()) {
-        std::string picked = ScanAndPickMap(map_dir_);
-        if (!picked.empty()) {
-            if (LoadMapFromFile(picked)) {
-                LOG_INFO("MazeEnv", "从目录随机选取地图加载成功: %s", picked.c_str());
-                loaded_map_path_ = picked;
-                map_loaded = true;
-            } else {
-                LOG_WARN("MazeEnv", "随机选取的地图文件加载失败: %s", picked.c_str());
-            }
-        } else {
-            LOG_INFO("MazeEnv", "地图目录无可用 .json 文件: %s", map_dir_.c_str());
-        }
-    }
-
-    // 3. 兜底：使用默认墙壁
-    if (!map_loaded) {
-        LOG_INFO("MazeEnv", "使用默认墙壁");
-        LoadWalls();
-    }
+    loaded_map_path_ = map_file_;
+    LOG_INFO("MazeEnv", "任务地图加载成功: %s", map_file_.c_str());
 
     // 计算起点/终点的网格坐标（地图文件可能已覆盖起终点坐标）
-    start_gx_ = ToGridX(start_x_);
-    start_gy_ = ToGridY(start_y_);
-    end_gx_   = ToGridX(end_x_);
-    end_gy_   = ToGridY(end_y_);
+    const int position_start_gx = ToGridX(start_x_);
+    const int position_start_gy = ToGridY(start_y_);
+    const int position_end_gx = ToGridX(end_x_);
+    const int position_end_gy = ToGridY(end_y_);
+    if (has_authoritative_grid_) {
+        if (start_gx_ != position_start_gx ||
+            start_gy_ != position_start_gy ||
+            end_gx_ != position_end_gx ||
+            end_gy_ != position_end_gy) {
+            LOG_ERROR("MazeEnv", "地图网格起终点与可视化坐标不一致");
+            return false;
+        }
+    } else {
+        start_gx_ = position_start_gx;
+        start_gy_ = position_start_gy;
+        end_gx_ = position_end_gx;
+        end_gy_ = position_end_gy;
+    }
 
-    // 确保起点和终点可通行
-    blocked_[start_gy_ * grid_cols_ + start_gx_] = false;
-    blocked_[end_gy_ * grid_cols_ + end_gx_]     = false;
+    if (!IsWalkable(start_gx_, start_gy_) ||
+        !IsWalkable(end_gx_, end_gy_)) {
+        LOG_ERROR("MazeEnv", "地图阻塞了起点或终点");
+        return false;
+    }
+    const int computed_shortest = ComputeShortestActionSteps();
+    if (computed_shortest <= 0) {
+        LOG_ERROR("MazeEnv", "地图起点无法到达终点");
+        return false;
+    }
+    if (shortest_action_steps_ > 0 &&
+        shortest_action_steps_ != computed_shortest) {
+        LOG_ERROR("MazeEnv", "地图 shortest_action_steps 不一致: declared=%d computed=%d",
+                  shortest_action_steps_, computed_shortest);
+        return false;
+    }
+    shortest_action_steps_ = computed_shortest;
+    const std::string computed_checksum = ComputeCanonicalChecksum();
+    if (computed_checksum.empty() ||
+        map_checksum_sha256_ != computed_checksum) {
+        LOG_ERROR("MazeEnv", "地图 canonical checksum 不一致: declared=%s computed=%s",
+                  map_checksum_sha256_.c_str(), computed_checksum.c_str());
+        return false;
+    }
 
     // 初始化 Agent
     int agent_num = config.run.agent_num;
@@ -91,6 +109,7 @@ void MazeEnv::Init(const ClientConfig& config) {
         agents_[i].grid_x = start_gx_;
         agents_[i].grid_y = start_gy_;
         agents_[i].done   = false;
+        agents_[i].last_move_blocked = false;
         agents_[i].termination_reason = AgentTerminationReason::Active;
     }
 
@@ -100,6 +119,110 @@ void MazeEnv::Init(const ClientConfig& config) {
                 "start_grid=(%d,%d), end_grid=(%d,%d), max_steps=%d",
                 agent_num, grid_cols_, grid_rows_, grid_size_,
                 start_gx_, start_gy_, end_gx_, end_gy_, max_steps_);
+    return true;
+}
+
+void MazeEnv::SetMaxSteps(int max_steps) {
+    if (max_steps > 0) max_steps_ = max_steps;
+}
+
+std::uint32_t MazeEnv::GetGridSizeMicrounits() const {
+    return grid_size_microunits_;
+}
+
+std::string MazeEnv::GetBlockedBitmap() const {
+    std::string bitmap;
+    bitmap.resize(blocked_.size());
+    for (std::size_t index = 0; index < blocked_.size(); ++index) {
+        bitmap[index] = blocked_[index] ? '\x01' : '\x00';
+    }
+    return bitmap;
+}
+
+int MazeEnv::ComputeShortestActionSteps() const {
+    if (grid_cols_ <= 0 || grid_rows_ <= 0) return -1;
+    const int start = start_gy_ * grid_cols_ + start_gx_;
+    const int goal = end_gy_ * grid_cols_ + end_gx_;
+    std::vector<int> distance(
+        static_cast<std::size_t>(grid_cols_ * grid_rows_), -1);
+    std::deque<int> queue;
+    distance[start] = 0;
+    queue.push_back(start);
+    while (!queue.empty()) {
+        const int current = queue.front();
+        queue.pop_front();
+        if (current == goal) return distance[current];
+        const int gx = current % grid_cols_;
+        const int gy = current / grid_cols_;
+        for (int action = 1; action < 9; ++action) {
+            const int dx = kGridActionDirs[action][0];
+            const int dy = kGridActionDirs[action][1];
+            const int nx = gx + dx;
+            const int ny = gy + dy;
+            if (!IsWalkable(nx, ny)) continue;
+            if (dx != 0 && dy != 0 &&
+                (!IsWalkable(gx + dx, gy) ||
+                 !IsWalkable(gx, gy + dy))) {
+                continue;
+            }
+            const int next = ny * grid_cols_ + nx;
+            if (distance[next] >= 0) continue;
+            distance[next] = distance[current] + 1;
+            queue.push_back(next);
+        }
+    }
+    return -1;
+}
+
+std::string MazeEnv::ComputeCanonicalChecksum() const {
+    if (map_format_version_ != 4 ||
+        action_rule_id_ != "maze.action.9-way.no-corner-cut.v1" ||
+        GetGridSizeMicrounits() == 0) {
+        return "";
+    }
+    std::vector<std::uint8_t> payload;
+    const std::string magic("rl.task.maze.map.v4\0", 20);
+    payload.insert(payload.end(), magic.begin(), magic.end());
+    const auto append_u32 = [&](std::uint32_t value) {
+        payload.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xffU));
+        payload.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xffU));
+        payload.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xffU));
+        payload.push_back(static_cast<std::uint8_t>(value & 0xffU));
+    };
+    const auto append_i32 = [&](std::int32_t value) {
+        append_u32(static_cast<std::uint32_t>(value));
+    };
+    append_u32(static_cast<std::uint32_t>(map_format_version_));
+    append_u32(static_cast<std::uint32_t>(grid_cols_));
+    append_u32(static_cast<std::uint32_t>(grid_rows_));
+    append_u32(GetGridSizeMicrounits());
+    append_i32(start_gx_);
+    append_i32(start_gy_);
+    append_i32(end_gx_);
+    append_i32(end_gy_);
+    append_u32(static_cast<std::uint32_t>(blocked_.size()));
+    for (const bool blocked : blocked_) payload.push_back(blocked ? 1U : 0U);
+    append_u32(static_cast<std::uint32_t>(action_rule_id_.size()));
+    payload.insert(payload.end(), action_rule_id_.begin(), action_rule_id_.end());
+
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    if (!context) return "";
+    bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1 &&
+              EVP_DigestUpdate(context, payload.data(), payload.size()) == 1;
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_size = 0;
+    if (ok) {
+        ok = EVP_DigestFinal_ex(context, digest.data(), &digest_size) == 1;
+    }
+    EVP_MD_CTX_free(context);
+    if (!ok) return "";
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (unsigned int index = 0; index < digest_size; ++index) {
+        output << std::setw(2)
+               << static_cast<unsigned int>(digest[index]);
+    }
+    return output.str();
 }
 
 // ---- 重置所有 Agent 到起点 ----
@@ -108,10 +231,10 @@ void MazeEnv::Reset() {
         agent.grid_x = start_gx_;
         agent.grid_y = start_gy_;
         agent.done   = false;
+        agent.last_move_blocked = false;
         agent.termination_reason = AgentTerminationReason::Active;
     }
     frame_id_ = 0;
-    first_done_frame_ = -1;
 }
 
 // ---- 执行网格级移动 ----
@@ -164,18 +287,13 @@ void MazeEnv::Step(int agent_id, int action_id) {
         agent.grid_x = new_gx;
         agent.grid_y = new_gy;
     }
+    agent.last_move_blocked = action_id != 0 && !can_move;
     // 不可达则保持原位，AIServer 下一帧会根据新状态重新决策
 
     // ---- 4. 终止判定 ----
     if (CheckGoalReached(agent)) {
         agent.done = true;
         agent.termination_reason = AgentTerminationReason::GoalReached;
-        // 记录首个 Agent 完成的帧号（启动倒计时）
-        if (first_done_frame_ < 0) {
-            first_done_frame_ = frame_id_;
-            LOG_INFO("MazeEnv", "Agent %d 首个通关! frame=%d 启动%d帧倒计时",
-                        agent_id, frame_id_, kCountdownFrames);
-        }
         LOG_INFO("MazeEnv", "Agent %d 到达终点! frame=%d grid=(%d,%d)",
                     agent_id, frame_id_, agent.grid_x, agent.grid_y);
     } else if (CheckTimeout()) {
@@ -183,12 +301,6 @@ void MazeEnv::Step(int agent_id, int action_id) {
         agent.termination_reason = AgentTerminationReason::TimeLimit;
         LOG_INFO("MazeEnv", "Agent %d 超时! frame=%d grid=(%d,%d)",
                     agent_id, frame_id_ + 1, agent.grid_x, agent.grid_y);
-    } else if (CheckCountdownExpired()) {
-        // 倒计时到期，强制结束未完成的 Agent
-        agent.done = true;
-        agent.termination_reason = AgentTerminationReason::Countdown;
-        LOG_INFO("MazeEnv", "Agent %d 倒计时结束! frame=%d grid=(%d,%d)",
-                    agent_id, frame_id_, agent.grid_x, agent.grid_y);
     }
 }
 
@@ -213,19 +325,6 @@ bool MazeEnv::AllDone() const {
         if (!agent.done) return false;
     }
     return true;
-}
-
-// ---- 是否有任一 Agent 已结束 ----
-bool MazeEnv::HasAnyDone() const {
-    for (const auto& agent : agents_) {
-        if (agent.done) return true;
-    }
-    return false;
-}
-
-// ---- 获取首个 Agent 完成时的帧号 ----
-int MazeEnv::GetFirstDoneFrame() const {
-    return first_done_frame_;
 }
 
 // ---- Agent 数量 ----
@@ -263,29 +362,6 @@ bool MazeEnv::CheckTimeout() const {
     return frame_id_ + 1 >= max_steps_;
 }
 
-// ---- 是否倒计时到期（首个 Agent 通关后 N 帧）----
-bool MazeEnv::CheckCountdownExpired() const {
-    if (first_done_frame_ < 0) return false;
-    return (frame_id_ - first_done_frame_) >= kCountdownFrames;
-}
-
-// ---- 加载默认墙壁到网格（map_file 为空时的兜底方案）----
-void MazeEnv::LoadWalls() {
-    // 内部隔墙（硬编码默认 3 面墙壁，不添加外围边界墙壁，网格越界检查天然阻止越界）
-    struct { float x1, y1, x2, y2, t; } default_walls[] = {
-        {5000, 0, 5000, 14000, 100},
-        {10000, 6000, 10000, 20000, 100},
-        {15000, 0, 15000, 14000, 100}
-    };
-
-    for (const auto& w : default_walls) {
-        AddWallToGrid(w.x1, w.y1, w.x2, w.y2, w.t);
-        walls_.push_back({w.x1, w.y1, w.x2, w.y2, w.t});
-    }
-
-    LOG_INFO("MazeEnv", "默认墙壁加载完成: %d 面内部隔墙", static_cast<int>(walls_.size()));
-}
-
 // ---- 从 JSON 文件加载地图数据 ----
 bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
     std::ifstream ifs(filepath);
@@ -300,21 +376,66 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
     std::string content = ss.str();
     ifs.close();
 
-    // 轻量 JSON 解析：提取 start_pos、end_pos、bounds、walls
-    // 辅助 lambda：查找 "key": value 中的数值
-    auto findNumber = [&](const std::string& text, const std::string& key) -> float {
+    // 轻量 JSON 解析：提取 start_pos、end_pos、bounds、walls。
+    // canonical 字段先以 double 解析，避免经过 float 后改变整数化结果。
+    auto findDouble = [&](const std::string& text,
+                          const std::string& key) -> double {
         std::string pattern = "\"" + key + "\"";
         size_t pos = text.find(pattern);
-        if (pos == std::string::npos) return -1.0f;
+        if (pos == std::string::npos) return -1.0;
         pos = text.find(':', pos + pattern.size());
-        if (pos == std::string::npos) return -1.0f;
+        if (pos == std::string::npos) return -1.0;
         pos++;
         while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t')) pos++;
         size_t end = pos;
         while (end < text.size() && (std::isdigit(text[end]) || text[end] == '.' || text[end] == '-')) end++;
-        if (end == pos) return -1.0f;
-        try { return std::stof(text.substr(pos, end - pos)); } catch (...) { return -1.0f; }
+        if (end == pos) return -1.0;
+        try {
+            std::size_t consumed = 0;
+            const std::string token = text.substr(pos, end - pos);
+            const double value = std::stod(token, &consumed);
+            return consumed == token.size() && std::isfinite(value)
+                       ? value
+                       : -1.0;
+        } catch (...) {
+            return -1.0;
+        }
     };
+    auto findNumber = [&](const std::string& text,
+                          const std::string& key) -> float {
+        return static_cast<float>(findDouble(text, key));
+    };
+
+    auto findString = [&](const std::string& text,
+                          const std::string& key) -> std::string {
+        const std::string pattern = "\"" + key + "\"";
+        size_t pos = text.find(pattern);
+        if (pos == std::string::npos) return "";
+        pos = text.find(':', pos + pattern.size());
+        if (pos == std::string::npos) return "";
+        const size_t begin = text.find('"', pos + 1);
+        if (begin == std::string::npos) return "";
+        const size_t end = text.find('"', begin + 1);
+        return end == std::string::npos
+                   ? ""
+                   : text.substr(begin + 1, end - begin - 1);
+    };
+
+    map_format_version_ = static_cast<int>(findNumber(content, "version"));
+    map_checksum_sha256_ = findString(content, "checksum_sha256");
+    const int declared_shortest =
+        static_cast<int>(findNumber(content, "shortest_action_steps"));
+    if (declared_shortest > 0) shortest_action_steps_ = declared_shortest;
+    const std::string declared_action_rule =
+        findString(content, "action_rule_id");
+    if (!declared_action_rule.empty()) action_rule_id_ = declared_action_rule;
+    if (map_format_version_ != 4 ||
+        action_rule_id_ != "maze.action.9-way.no-corner-cut.v1" ||
+        findString(content, "blocked_bitmap_encoding") !=
+            "row-major-u8-0-open-1-blocked") {
+        LOG_WARN("MazeEnv", "地图不是受支持的 v4/action-rule/bitmap 格式");
+        return false;
+    }
 
     // 解析 start_pos
     size_t sp_pos = content.find("\"start_pos\"");
@@ -365,15 +486,26 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
     }
 
     // 解析 grid_size（v2 格式，覆盖配置值）
-    float json_grid_size = findNumber(content, "grid_size");
-    if (json_grid_size > 0) {
-        grid_size_ = json_grid_size;
+    const double json_grid_size = findDouble(content, "grid_size");
+    const double json_grid_size_microunits =
+        std::round(json_grid_size * 1000000.0);
+    if (json_grid_size > 0.0 &&
+        json_grid_size_microunits > 0.0 &&
+        json_grid_size_microunits <=
+            static_cast<double>(
+                std::numeric_limits<std::uint32_t>::max())) {
+        grid_size_microunits_ =
+            static_cast<std::uint32_t>(json_grid_size_microunits);
+        grid_size_ = static_cast<float>(json_grid_size);
         LOG_INFO("MazeEnv", "地图 grid_size: %.2f", grid_size_);
+    } else {
+        return false;
     }
 
-    // 解析 grid_count（v2 格式，直接使用，不再 ceil 计算）
-    float json_grid_count = findNumber(content, "grid_count");
-    bool has_grid_count = (json_grid_count > 0);
+    const int json_grid_cols =
+        static_cast<int>(findNumber(content, "grid_cols"));
+    const int json_grid_rows =
+        static_cast<int>(findNumber(content, "grid_rows"));
 
     // 解析 bounds（可选，覆盖地图尺寸）
     size_t bounds_pos = content.find("\"bounds\"");
@@ -389,18 +521,42 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
         }
     }
 
-    // 重建网格：优先使用地图提供的 grid_count，否则 ceil 计算
-    if (has_grid_count) {
-        int gc = static_cast<int>(json_grid_count);
-        grid_cols_ = gc;
-        grid_rows_ = gc;
-        LOG_INFO("MazeEnv", "地图 grid_count: %d（直接使用）", gc);
-    } else {
-        grid_cols_ = static_cast<int>(std::ceil(map_width_ / grid_size_));
-        grid_rows_ = static_cast<int>(std::ceil(map_height_ / grid_size_));
-        LOG_INFO("MazeEnv", "grid_count 由 ceil 计算: %dx%d", grid_cols_, grid_rows_);
-    }
+    if (json_grid_cols <= 0 || json_grid_rows <= 0) return false;
+    grid_cols_ = json_grid_cols;
+    grid_rows_ = json_grid_rows;
     blocked_.assign(grid_cols_ * grid_rows_, false);
+
+    auto readGridPoint = [&](const std::string& key, int& gx, int& gy) {
+        const size_t position = content.find("\"" + key + "\"");
+        if (position == std::string::npos) return false;
+        const size_t begin = content.find('{', position);
+        const size_t end = content.find('}', begin);
+        if (begin == std::string::npos || end == std::string::npos) return false;
+        const std::string block = content.substr(begin, end - begin + 1);
+        gx = static_cast<int>(findNumber(block, "x"));
+        gy = static_cast<int>(findNumber(block, "y"));
+        return gx >= 0 && gy >= 0;
+    };
+    if (!readGridPoint("start_grid", start_gx_, start_gy_) ||
+        !readGridPoint("goal_grid", end_gx_, end_gy_)) {
+        return false;
+    }
+    has_authoritative_grid_ = true;
+
+    const std::string bitmap_hex = findString(content, "blocked_bitmap_hex");
+    if (bitmap_hex.size() != blocked_.size() * 2) return false;
+    auto hexValue = [](char character) -> int {
+        if (character >= '0' && character <= '9') return character - '0';
+        if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+        if (character >= 'A' && character <= 'F') return character - 'A' + 10;
+        return -1;
+    };
+    for (std::size_t index = 0; index < blocked_.size(); ++index) {
+        const int high = hexValue(bitmap_hex[index * 2]);
+        const int low = hexValue(bitmap_hex[index * 2 + 1]);
+        if (high != 0 || (low != 0 && low != 1)) return false;
+        blocked_[index] = low == 1;
+    }
 
     // 解析 walls 数组
     size_t walls_pos = content.find("\"walls\"");
@@ -437,7 +593,6 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
         if (t < 0) t = 10.0f;  // 默认厚度（与地图生成器一致）
 
         if (x1 >= 0 && y1 >= 0 && x2 >= 0 && y2 >= 0) {
-            AddWallToGrid(x1, y1, x2, y2, t);
             walls_.push_back({x1, y1, x2, y2, t});
             wall_count++;
         }
@@ -468,55 +623,4 @@ RayResult MazeEnv::CastRays(int gx, int gy, int max_range) const {
         result.distances[d] = static_cast<float>(ray_dist) / max_range;
     }
     return result;
-}
-
-// ---- 添加单面墙壁到网格 ----
-void MazeEnv::AddWallToGrid(float x1, float y1, float x2, float y2, float thickness) {
-    float half_t = thickness * 0.5f;
-    float min_x = std::min(x1, x2) - half_t;
-    float max_x = std::max(x1, x2) + half_t;
-    float min_y = std::min(y1, y2) - half_t;
-    float max_y = std::max(y1, y2) + half_t;
-
-    int gx_min = std::max(0, static_cast<int>(std::floor(min_x / grid_size_)));
-    int gx_max = std::min(grid_cols_ - 1, static_cast<int>(std::floor(max_x / grid_size_)));
-    int gy_min = std::max(0, static_cast<int>(std::floor(min_y / grid_size_)));
-    int gy_max = std::min(grid_rows_ - 1, static_cast<int>(std::floor(max_y / grid_size_)));
-
-    for (int gy = gy_min; gy <= gy_max; ++gy) {
-        for (int gx = gx_min; gx <= gx_max; ++gx) {
-            blocked_[gy * grid_cols_ + gx] = true;
-        }
-    }
-}
-
-// ---- 扫描目录并随机选取一个 .json 地图文件 ----
-std::string MazeEnv::ScanAndPickMap(const std::string& dir_path) {
-    std::vector<std::string> json_files;
-
-    DIR* dir = opendir(dir_path.c_str());
-    if (dir) {
-        struct dirent* entry;
-        while ((entry = readdir(dir)) != nullptr) {
-            std::string name(entry->d_name);
-            if (name.size() > 5 && name.substr(name.size() - 5) == ".json") {
-                json_files.push_back(dir_path + "/" + name);
-            }
-        }
-        closedir(dir);
-    }
-
-    if (json_files.empty()) {
-        return "";
-    }
-
-    // 随机选取一个
-    std::random_device rd;
-    std::mt19937 rng(rd());
-    std::uniform_int_distribution<int> dist(0, static_cast<int>(json_files.size()) - 1);
-    int idx = dist(rng);
-
-    LOG_INFO("MazeEnv", "目录 %s 下发现 %zu 个地图文件，随机选取: %s",
-             dir_path.c_str(), json_files.size(), json_files[idx].c_str());
-    return json_files[idx];
 }

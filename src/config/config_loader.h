@@ -5,12 +5,11 @@
 
 // ---- 运行参数（main 使用）----
 struct RunConfig {
-    int   agent_num     = 1;            // Agent 数量
-    int   max_episodes  = 100;          // 最大 Episode 数
-    int   log_interval  = 100;          // 日志打印间隔（帧）
-    std::string client_id = "client-0";
-    std::string env_id   = "env-0";
-    int session_id       = 0;
+    // agent_num 与 workload 仅由 AIServer 的 TaskSpec 写入，不从本地配置读取。
+    int   agent_num     = 0;
+    int   log_interval  = 100;
+    std::string client_instance_id;
+    std::string environment_instance_id;
     std::string workload;
 };
 
@@ -19,13 +18,14 @@ struct EnvConfig {
     float map_width      = 20000.0f;    // 地图宽度 (cm)
     float map_height     = 20000.0f;    // 地图高度 (cm)
     float grid_size      = 500.0f;      // 网格大小 (cm)，将连续坐标离散化为网格，支持浮点精度
-    int   max_steps      = 10000;       // 最大步数
+    // max_steps 与 map_file 是 AIServer 分配任务后的运行时值。
+    int   max_steps      = 0;
     float start_x        = 500.0f;      // 起点 X
     float start_y        = 500.0f;      // 起点 Y
     float end_x          = 19500.0f;    // 终点 X
     float end_y          = 19500.0f;    // 终点 Y
-    std::string map_file;               // 地图 JSON 文件路径（为空则从 map_dir 随机选取或使用默认墙壁）
-    std::string map_dir;                // 地图目录路径（存在 .json 文件则随机选取一个，否则忽略）
+    std::string map_file;
+    std::string map_registry_dir = "maps/test";
 };
 
 // ---- 网络参数 ----
@@ -51,5 +51,5 @@ struct ClientConfig {
 };
 
 // ---- 配置加载器 ----
-// 从 YAML 文件加载配置，失败时使用默认值
+// 本地配置只拥有实例、网络、地图 registry 与 Replay 参数；任务参数缺失时不得回退。
 bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config);

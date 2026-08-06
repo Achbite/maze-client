@@ -10,13 +10,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgrpc++-dev \
     protobuf-compiler-grpc \
     libabsl-dev \
+    libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . /source
 RUN cmake -S /source -B /source/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build /source/build --parallel
+    cmake --build /source/build --parallel && \
+    ctest --test-dir /source/build --output-on-failure
 
 FROM python:3.11-slim
 
@@ -45,7 +47,7 @@ RUN chmod +x /opt/rl/maze-client/bin/maze_client \
     /opt/rl/maze-client/scripts/entrypoint.sh
 
 WORKDIR /opt/rl/maze-client
-ENV MAZE_SESSION_POLICY_PATH=/tmp/maze-client-session-policy
+ENV RL_SESSION_POLICY_PATH=/tmp/rl-client-session-policy
 EXPOSE 9004
 HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
     CMD ["test", "-s", "/tmp/maze-client-session-policy"]

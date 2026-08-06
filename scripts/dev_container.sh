@@ -6,19 +6,19 @@ action="${1:-shell}"
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 container_name="client-dev"
 network_name="rl-training-dev"
-tag="${CLIENT_DEV_IMAGE_TAG:-test-001}"
-runtime_image="rl-training/maze-client:${CLIENT_IMAGE_TAG:-test-001}"
+tag="${RL_CLIENT_DEV_IMAGE_TAG:-test-001}"
+runtime_image="rl-training/maze-client:${RL_CLIENT_IMAGE_TAG:-test-001}"
 dev_image="rl-training/maze-client-dev:${tag}"
 replay_host_port=9004
 replay_tunnel_socket="${TMPDIR:-/tmp}/rl-training-client-dev-9004.sock"
 colima_ssh_config="${RL_COLIMA_SSH_CONFIG:-${HOME}/.colima/_lima/colima/ssh.config}"
-replay_mode="${MAZE_REPLAY_MODE:-local-test}"
+replay_mode="${RL_REPLAY_MODE:-local-test}"
 
 case "${replay_mode}" in
     local-test|model-evaluation)
         ;;
     *)
-        echo "invalid MAZE_REPLAY_MODE: ${replay_mode}" >&2
+        echo "invalid RL_REPLAY_MODE: ${replay_mode}" >&2
         exit 2
         ;;
 esac
@@ -113,7 +113,7 @@ ensure_container() {
             --network "${network_name}" \
             --network-alias "${container_name}" \
             --network-alias "maze-client" \
-            --env MAZE_REPLAY_PORT=9004 \
+            --env RL_REPLAY_PORT=9004 \
             --publish "127.0.0.1:${replay_host_port}:9004" \
             --volume "${repo_dir}:/workspace/maze-client" \
         )
@@ -150,6 +150,13 @@ case "${action}" in
         printf 'Replay URL: http://127.0.0.1:%s/\n' "${replay_host_port}"
         exec docker exec -it "${container_name}" bash -lc \
             "cd /workspace/maze-client && exec bash ./replay.sh ${replay_mode}"
+        ;;
+    replay-start)
+        ensure_container
+        printf 'Replay URL: http://127.0.0.1:%s/\n' "${replay_host_port}"
+        ;;
+    replay-stop)
+        stop_replay_transport
         ;;
     clean)
         if docker container inspect "${container_name}" >/dev/null 2>&1; then

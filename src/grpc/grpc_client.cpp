@@ -2,11 +2,49 @@
 #include "log/logger.h"
 
 #include <chrono>
+#include <thread>
 
 namespace {
 
 void SetRpcDeadline(grpc::ClientContext& context) {
     context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+}
+
+void SetUpdateDeadline(grpc::ClientContext& context) {
+    // A training Update can intentionally wait at a global sample boundary
+    // while the Learner publishes the next contiguous model.
+    context.set_deadline(
+        std::chrono::system_clock::now() + std::chrono::seconds(90));
+}
+
+template <typename Response, typename Invoke>
+bool InvokeIdempotent(const char* operation,
+                      bool update_deadline,
+                      Response& response,
+                      Invoke invoke) {
+    grpc::Status last_status;
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        grpc::ClientContext context;
+        if (update_deadline) {
+            SetUpdateDeadline(context);
+        } else {
+            SetRpcDeadline(context);
+        }
+        Response candidate;
+        last_status = invoke(context, candidate);
+        if (last_status.ok()) {
+            response.Swap(&candidate);
+            return true;
+        }
+        const bool ambiguous_transport_failure =
+            last_status.error_code() == grpc::StatusCode::UNAVAILABLE ||
+            last_status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED;
+        if (!ambiguous_transport_failure || attempt == 2) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    LOG_ERROR("GrpcClient", "%s RPC 失败: %s", operation,
+              last_status.error_message().c_str());
+    return false;
 }
 
 }  // namespace
@@ -17,7 +55,7 @@ bool GrpcClient::Connect(const std::string& host, int port) {
 
     // 创建不安全通道（内网通信，无需 TLS）
     channel_ = grpc::CreateChannel(target, grpc::InsecureChannelCredentials());
-    stub_ = maze::MazeService::NewStub(channel_);
+    stub_ = maze::MazeTaskService::NewStub(channel_);
 
     // 等待通道就绪（最多 5 秒）
     auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(5);
@@ -40,82 +78,69 @@ bool GrpcClient::IsConnected() const {
 
 bool GrpcClient::OpenSession(const maze::OpenSessionReq& req,
                              maze::OpenSessionRsp& rsp) {
-    grpc::ClientContext context;
-    SetRpcDeadline(context);
-    grpc::Status status = stub_->OpenSession(&context, req, &rsp);
-
-    if (!status.ok()) {
-        LOG_ERROR(
-            "GrpcClient", "OpenSession RPC 失败: %s",
-            status.error_message().c_str());
-        return false;
-    }
-    return true;
+    return InvokeIdempotent(
+        "OpenSession", false, rsp,
+        [&](grpc::ClientContext& context, maze::OpenSessionRsp& candidate) {
+            return stub_->OpenSession(&context, req, &candidate);
+        });
 }
 
 // ---- 兼容初始化 RPC ----
 bool GrpcClient::Init(const maze::InitReq& req, maze::InitRsp& rsp) {
-    grpc::ClientContext context;
-    SetRpcDeadline(context);
-    grpc::Status status = stub_->Init(&context, req, &rsp);
-
-    if (!status.ok()) {
-        LOG_ERROR("GrpcClient", "Init RPC 失败: %s", status.error_message().c_str());
-        return false;
-    }
-    return true;
+    return InvokeIdempotent(
+        "Init", false, rsp,
+        [&](grpc::ClientContext& context, maze::InitRsp& candidate) {
+            return stub_->Init(&context, req, &candidate);
+        });
 }
 
 bool GrpcClient::BeginEpisode(const maze::BeginEpisodeReq& req,
-                              maze::EpisodeLifecycleRsp& rsp) {
-    grpc::ClientContext context;
-    SetRpcDeadline(context);
-    grpc::Status status = stub_->BeginEpisode(&context, req, &rsp);
-
-    if (!status.ok()) {
-        LOG_ERROR("GrpcClient", "BeginEpisode RPC 失败: %s", status.error_message().c_str());
-        return false;
-    }
-    return true;
+                              maze::BeginEpisodeRsp& rsp) {
+    return InvokeIdempotent(
+        "BeginEpisode", false, rsp,
+        [&](grpc::ClientContext& context,
+            maze::BeginEpisodeRsp& candidate) {
+            return stub_->BeginEpisode(&context, req, &candidate);
+        });
 }
 
 // ---- 帧同步 RPC ----
 bool GrpcClient::Update(const maze::UpdateReq& req, maze::UpdateRsp& rsp) {
-    grpc::ClientContext context;
-    SetRpcDeadline(context);
-    grpc::Status status = stub_->Update(&context, req, &rsp);
-
-    if (!status.ok()) {
-        LOG_ERROR("GrpcClient", "Update RPC 失败: %s", status.error_message().c_str());
-        return false;
-    }
-    return true;
+    return InvokeIdempotent(
+        "Update", true, rsp,
+        [&](grpc::ClientContext& context, maze::UpdateRsp& candidate) {
+            return stub_->Update(&context, req, &candidate);
+        });
 }
 
 // ---- Episode 结束 RPC ----
-bool GrpcClient::EndEpisode(const maze::EpisodeEndReq& req, maze::EpisodeEndRsp& rsp) {
-    grpc::ClientContext context;
-    SetRpcDeadline(context);
-    grpc::Status status = stub_->EndEpisode(&context, req, &rsp);
-
-    if (!status.ok()) {
-        LOG_ERROR("GrpcClient", "EndEpisode RPC 失败: %s", status.error_message().c_str());
-        return false;
-    }
-    return true;
+bool GrpcClient::EndEpisode(const maze::EndEpisodeReq& req, maze::EndEpisodeRsp& rsp) {
+    return InvokeIdempotent(
+        "EndEpisode", false, rsp,
+        [&](grpc::ClientContext& context, maze::EndEpisodeRsp& candidate) {
+            return stub_->EndEpisode(&context, req, &candidate);
+        });
 }
 
 bool GrpcClient::AbortEpisode(const maze::AbortEpisodeReq& req,
-                              maze::EpisodeLifecycleRsp& rsp) {
-    grpc::ClientContext context;
-    SetRpcDeadline(context);
-    grpc::Status status = stub_->AbortEpisode(&context, req, &rsp);
+                              maze::AbortEpisodeRsp& rsp) {
+    return InvokeIdempotent(
+        "AbortEpisode", false, rsp,
+        [&](grpc::ClientContext& context,
+            maze::AbortEpisodeRsp& candidate) {
+            return stub_->AbortEpisode(&context, req, &candidate);
+        });
+}
 
-    if (!status.ok()) {
-        LOG_ERROR("GrpcClient", "AbortEpisode RPC 失败: %s", status.error_message().c_str());
-        return false;
-    }
-    return true;
+bool GrpcClient::CloseSession(const maze::CloseSessionReq& req,
+                              maze::CloseSessionRsp& rsp) {
+    if (!connected_ || !stub_) return false;
+    return InvokeIdempotent(
+        "CloseSession", false, rsp,
+        [&](grpc::ClientContext& context,
+            maze::CloseSessionRsp& candidate) {
+            return stub_->CloseSession(&context, req, &candidate);
+        });
 }
 
 // ---- 断开连接，释放 Channel 和 Stub ----

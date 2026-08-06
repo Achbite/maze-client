@@ -7,12 +7,12 @@ default_client_bin="${repo_dir}/build/maze_client"
 if [ -x "${repo_dir}/bin/maze_client" ]; then
     default_client_bin="${repo_dir}/bin/maze_client"
 fi
-client_bin="${MAZE_CLIENT_BIN:-${default_client_bin}}"
-client_config="${MAZE_CLIENT_CONFIG:-${repo_dir}/configs/client_config.yaml}"
-replay_port="${MAZE_REPLAY_PORT:-9004}"
-replay_dir="${MAZE_VIZ_OUTPUT_DIR:-${repo_dir}/log/viz}"
-replay_bin="${MAZE_REPLAY_BIN:-${repo_dir}/replay.sh}"
-session_policy_path="${MAZE_SESSION_POLICY_PATH:-/tmp/maze-client-session-policy.$$}"
+client_bin="${RL_CLIENT_BIN:-${default_client_bin}}"
+client_config="${RL_CLIENT_CONFIG:-${repo_dir}/configs/client_config.yaml}"
+replay_port="${RL_REPLAY_PORT:-9004}"
+replay_dir="${RL_VIZ_OUTPUT_DIR:-${repo_dir}/log/viz}"
+replay_bin="${RL_REPLAY_BIN:-${repo_dir}/replay.sh}"
+session_policy_path="${RL_SESSION_POLICY_PATH:-/tmp/rl-client-session-policy.$$}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -22,20 +22,8 @@ while [ "$#" -gt 0 ]; do
             ;;
         --aiserver)
             address="${2:?--aiserver requires host:port}"
-            export MAZE_AISERVER_HOST="${address%:*}"
-            export MAZE_AISERVER_PORT="${address##*:}"
-            shift 2
-            ;;
-        --agents)
-            export MAZE_AGENT_NUM="${2:?--agents requires a value}"
-            shift 2
-            ;;
-        --episodes)
-            export MAZE_MAX_EPISODES="${2:?--episodes requires a value}"
-            shift 2
-            ;;
-        --max-steps)
-            export MAZE_MAX_STEPS="${2:?--max-steps requires a value}"
+            export RL_AISERVER_HOST="${address%:*}"
+            export RL_AISERVER_PORT="${address##*:}"
             shift 2
             ;;
         --replay-dir)
@@ -59,9 +47,9 @@ if [ ! -x "${client_bin}" ]; then
     exit 1
 fi
 
-export MAZE_VIZ_OUTPUT_DIR="${replay_dir}"
-export MAZE_REPLAY_PORT="${replay_port}"
-export MAZE_SESSION_POLICY_PATH="${session_policy_path}"
+export RL_VIZ_OUTPUT_DIR="${replay_dir}"
+export RL_REPLAY_PORT="${replay_port}"
+export RL_SESSION_POLICY_PATH="${session_policy_path}"
 rm -f "${session_policy_path}"
 
 client_pid=""
@@ -134,19 +122,48 @@ replay_policy="$(
     awk -F= '$1 == "replay_policy" { print $2; exit }' \
         "${session_policy_path}"
 )"
+model_version="$(
+    awk -F= '$1 == "model_version" { print $2; exit }' \
+        "${session_policy_path}"
+)"
+model_checksum="$(
+    awk -F= '$1 == "model_artifact_digest" { print $2; exit }' \
+        "${session_policy_path}"
+)"
 case "${workload}:${replay_policy}" in
     training:disabled)
         ;;
-    astar-test:disabled)
+    map-validation:disabled)
         ;;
     local-test:record-and-serve|\
     model-evaluation:record-and-serve)
+        if [[ ! "${model_version}" =~ ^[0-9]+$ ]] ||
+           [[ ! "${model_checksum}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Replay requires a valid model identity" >&2
+            exit 1
+        fi
         if [ ! -f "${replay_bin}" ]; then
             echo "Replay launcher is missing: ${replay_bin}" >&2
             exit 1
         fi
         mkdir -p "${replay_dir}"
-        validation_id="${MAZE_VALIDATION_ID:-local-validation}"
+        validation_id="${RL_VALIDATION_ID:-local-validation}"
+        if [[ ! "${validation_id}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Invalid validation ID" >&2
+            exit 1
+        fi
+        validation_manifest="${replay_dir}/validation-manifest.json"
+        validation_manifest_temp="${validation_manifest}.tmp.$$"
+        if ! printf '{"schema_version":1,"validation_id":"%s","model":{"version":%s,"sha256":"%s"},"parameters":{"workload":"%s"}}\n' \
+            "${validation_id}" "${model_version}" "${model_checksum}" \
+            "${workload}" > "${validation_manifest_temp}"; then
+            rm -f "${validation_manifest_temp}"
+            exit 1
+        fi
+        if ! mv "${validation_manifest_temp}" "${validation_manifest}"; then
+            rm -f "${validation_manifest_temp}"
+            exit 1
+        fi
         bash "${replay_bin}" "${workload}" &
         replay_pid=$!
 
@@ -184,8 +201,8 @@ if [ "${replay_policy}" = "disabled" ]; then
     exit "${client_status}"
 fi
 
-validation_id="${MAZE_VALIDATION_ID:-local-validation}"
-result_path="${MAZE_VALIDATION_RESULT_PATH:-${replay_dir}/client-result.json}"
+validation_id="${RL_VALIDATION_ID:-local-validation}"
+result_path="${RL_VALIDATION_RESULT_PATH:-${replay_dir}/client-result.json}"
 completed_ts="$(date +%s)"
 mkdir -p "$(dirname "${result_path}")"
 result_temp="${result_path}.tmp.$$"

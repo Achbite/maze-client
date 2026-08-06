@@ -29,6 +29,7 @@ DFS 打通 = 移除两个相邻格子之间的边界线段。
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -123,6 +124,11 @@ DIFFICULTY_MAP = {
 
 # 四方向偏移：右、下、左、上
 DIRECTIONS = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+ACTION_DIRECTIONS = [
+    (0, 1), (1, 1), (1, 0), (1, -1),
+    (0, -1), (-1, -1), (-1, 0), (-1, 1),
+]
+ACTION_RULE_ID = "maze.action.9-way.no-corner-cut.v1"
 
 
 # ============================================================
@@ -515,6 +521,94 @@ def bfs_reachable(edge_set, grid_dim, sx, sy, ex, ey):
     return False, -1
 
 
+def shortest_action_steps(blocked, grid_cols, grid_rows,
+                          start_gx, start_gy, goal_gx, goal_gy):
+    """Return unit-cost shortest path for the real 9-action transition rule."""
+    def walkable(gx, gy):
+        return (
+            0 <= gx < grid_cols
+            and 0 <= gy < grid_rows
+            and not blocked[gy][gx]
+        )
+
+    if not walkable(start_gx, start_gy) or not walkable(goal_gx, goal_gy):
+        return -1
+    distance = [-1] * (grid_cols * grid_rows)
+    start_index = start_gy * grid_cols + start_gx
+    goal_index = goal_gy * grid_cols + goal_gx
+    distance[start_index] = 0
+    queue = deque([start_index])
+    while queue:
+        current = queue.popleft()
+        if current == goal_index:
+            return distance[current]
+        gx = current % grid_cols
+        gy = current // grid_cols
+        for dx, dy in ACTION_DIRECTIONS:
+            nx, ny = gx + dx, gy + dy
+            if not walkable(nx, ny):
+                continue
+            if dx and dy and (
+                not walkable(gx + dx, gy)
+                or not walkable(gx, gy + dy)
+            ):
+                continue
+            next_index = ny * grid_cols + nx
+            if distance[next_index] >= 0:
+                continue
+            distance[next_index] = distance[current] + 1
+            queue.append(next_index)
+    return -1
+
+
+def blocked_bitmap_bytes(blocked, grid_cols, grid_rows):
+    """Dense row-major bytes; every cell is exactly 0 (open) or 1 (blocked)."""
+    if len(blocked) != grid_rows or any(
+        len(row) != grid_cols for row in blocked
+    ):
+        raise ValueError("blocked grid dimensions are inconsistent")
+    return bytes(
+        1 if blocked[gy][gx] else 0
+        for gy in range(grid_rows)
+        for gx in range(grid_cols)
+    )
+
+
+def canonical_map_payload(grid_cols, grid_rows, grid_size,
+                          start_gx, start_gy, goal_gx, goal_gy,
+                          bitmap, action_rule_id=ACTION_RULE_ID):
+    """Return the locked 0.8.0 cross-language canonical v4 byte stream."""
+    import struct
+
+    rule = action_rule_id.encode("utf-8")
+    grid_size_microunits = int(round(float(grid_size) * 1_000_000.0))
+    if not (0 < grid_size_microunits <= 0xFFFFFFFF):
+        raise ValueError("grid_size does not fit grid_size_microunits")
+    return b"".join(
+        (
+            b"rl.task.maze.map.v4\0",
+            struct.pack(">IIII", 4, grid_cols, grid_rows,
+                        grid_size_microunits),
+            struct.pack(">iiii", start_gx, start_gy, goal_gx, goal_gy),
+            struct.pack(">I", len(bitmap)),
+            bitmap,
+            struct.pack(">I", len(rule)),
+            rule,
+        )
+    )
+
+
+def canonical_map_checksum(grid_cols, grid_rows, grid_size,
+                           start_gx, start_gy, goal_gx, goal_gy,
+                           bitmap, action_rule_id=ACTION_RULE_ID):
+    payload = canonical_map_payload(
+        grid_cols, grid_rows, grid_size,
+        start_gx, start_gy, goal_gx, goal_gy,
+        bitmap, action_rule_id,
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
 # ============================================================
 # 随机起终点生成
 # ============================================================
@@ -726,12 +820,7 @@ def generate_map(seed, grid_dim, grid_size, wall_thickness, extra_open_ratio,
     clear_safe_zone(edge_set, room_dim, start_rx, start_ry, radius=1)
     clear_safe_zone(edge_set, room_dim, end_rx, end_ry, radius=1)
 
-    # 5. BFS 验证可达性（在房间坐标系中）
-    reachable, path_length = bfs_reachable(
-        edge_set, room_dim, start_rx, start_ry, end_rx, end_ry
-    )
-
-    # 6. 边墙 → blocked 网格（可配置房间大小）
+    # 5. 边墙 → blocked 网格（可配置房间大小）
     blocked, _ = edges_to_blocked_grid(edge_set, room_dim, room_size)
 
     # 7. 起终点在输出网格中的坐标（房间中心）
@@ -750,27 +839,49 @@ def generate_map(seed, grid_dim, grid_size, wall_thickness, extra_open_ratio,
     clear_blocked_safe_zone(blocked, out_dim, start_gx, start_gy, radius=1)
     clear_blocked_safe_zone(blocked, out_dim, end_gx, end_gy, radius=1)
 
-    # 8. blocked 网格 → 合并墙壁线段
+    # 8. 在最终 blocked grid 上验证真实动作可达性与最短路径。
+    path_length = shortest_action_steps(
+        blocked, out_dim, out_dim,
+        start_gx, start_gy, end_gx, end_gy,
+    )
+    reachable = path_length > 0
+    bitmap = blocked_bitmap_bytes(blocked, out_dim, out_dim)
+
+    # 9. blocked 网格 → 合并墙壁线段
     wall_segments = blocked_to_wall_segments(blocked, out_dim, out_grid_size, wall_thickness)
 
-    # 9. 起终点连续坐标（输出网格中心，保留浮点精度）
+    # 10. 起终点连续坐标（输出网格中心，保留浮点精度）
     start_pos = {"x": round((start_gx + 0.5) * out_grid_size, 2), "y": round((start_gy + 0.5) * out_grid_size, 2)}
     end_pos = {"x": round((end_gx + 0.5) * out_grid_size, 2), "y": round((end_gy + 0.5) * out_grid_size, 2)}
 
-    # 10. 组装地图数据（v3 格式，新增 room_size 字段）
+    output_grid_size = round(out_grid_size, 2)
+    checksum = canonical_map_checksum(
+        out_dim, out_dim, output_grid_size,
+        start_gx, start_gy, end_gx, end_gy,
+        bitmap,
+    )
+
+    # 11. 组装地图数据。walls 仅供 Replay；blocked_bitmap 是碰撞事实源。
     map_data = {
         "map_id": f"maze_{seed}",
-        "version": 3,
+        "version": 4,
         "seed": seed,
         "difficulty": 0,
-        "grid_count": out_dim,
-        "grid_size": round(out_grid_size, 2),
+        "grid_cols": out_dim,
+        "grid_rows": out_dim,
+        "grid_size": output_grid_size,
         "room_size": room_size,
         "room_dim": room_dim,
         "bounds": {"x_min": 0, "x_max": map_size, "y_min": 0, "y_max": map_size},
         "start_pos": start_pos,
         "end_pos": end_pos,
-        "bfs_path_length": path_length if reachable else -1,
+        "start_grid": {"x": start_gx, "y": start_gy},
+        "goal_grid": {"x": end_gx, "y": end_gy},
+        "action_rule_id": ACTION_RULE_ID,
+        "shortest_action_steps": path_length if reachable else -1,
+        "blocked_bitmap_encoding": "row-major-u8-0-open-1-blocked",
+        "blocked_bitmap_hex": bitmap.hex(),
+        "checksum_sha256": checksum,
         "wall_count": len(wall_segments),
         "walls": wall_segments
     }
@@ -979,12 +1090,10 @@ def main():
         wall_count = map_data["wall_count"]
         retry_info = f" (重试 {retries} 次)" if retries > 0 else ""
 
-        # 提取起终点网格坐标（使用输出网格大小）
-        out_gs = map_data["grid_size"]
-        start_gx = int(map_data["start_pos"]["x"] / out_gs)
-        start_gy = int(map_data["start_pos"]["y"] / out_gs)
-        end_gx = int(map_data["end_pos"]["x"] / out_gs)
-        end_gy = int(map_data["end_pos"]["y"] / out_gs)
+        start_gx = map_data["start_grid"]["x"]
+        start_gy = map_data["start_grid"]["y"]
+        end_gx = map_data["goal_grid"]["x"]
+        end_gy = map_data["goal_grid"]["y"]
 
         # 统计内部边墙数（不含外围边界 4 条）
         inner_walls = wall_count - 4
@@ -1002,6 +1111,10 @@ def main():
         # 写入文件
         filename = f"maze_{final_seed}.json"
         output_path = os.path.join(save_dir, filename)
+        if os.path.exists(output_path):
+            raise SystemExit(
+                f"拒绝重复 map_id 覆盖已有文件: {output_path}"
+            )
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(map_data, f, indent=4, ensure_ascii=False)
         print(f"  → 已保存: {output_path}")
