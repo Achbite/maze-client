@@ -122,6 +122,10 @@ replay_policy="$(
     awk -F= '$1 == "replay_policy" { print $2; exit }' \
         "${session_policy_path}"
 )"
+behavior_policy_scope="$(
+    awk -F= '$1 == "behavior_policy_scope" { print $2; exit }' \
+        "${session_policy_path}"
+)"
 model_version="$(
     awk -F= '$1 == "model_version" { print $2; exit }' \
         "${session_policy_path}"
@@ -132,11 +136,23 @@ model_checksum="$(
 )"
 case "${workload}:${replay_policy}" in
     training:disabled)
+        if [ "${behavior_policy_scope}" != "training-fragment" ]; then
+            echo "Training requires fragment-scoped behavior policy" >&2
+            exit 1
+        fi
         ;;
     map-validation:disabled)
+        if [ "${behavior_policy_scope}" != "none" ]; then
+            echo "Map validation must not bind a behavior policy" >&2
+            exit 1
+        fi
         ;;
     local-test:record-and-serve|\
     model-evaluation:record-and-serve)
+        if [ "${behavior_policy_scope}" != "evaluation-episode" ]; then
+            echo "Evaluation requires an episode-scoped behavior policy" >&2
+            exit 1
+        fi
         if [[ ! "${model_version}" =~ ^[0-9]+$ ]] ||
            [[ ! "${model_checksum}" =~ ^[0-9a-f]{64}$ ]]; then
             echo "Replay requires a valid model identity" >&2

@@ -6,18 +6,19 @@ C++ maze environment client. It obtains the workload and replay policy from AISe
 
 ## Quick Start
 
-Explicitly refresh the Contracts snapshot, then build the image:
+Synchronize the Contracts snapshot from the immutable artifact selected by an
+explicit version and platform, then build the image:
 
 ```bash
 (cd ../rl-contracts && bash build_artifact.sh)
-artifact=../.workspace/artifacts/rl-contracts/0.8.0/linux-arm64
-cp "${artifact}/common.proto" "${artifact}/maze_task.proto" proto/
-cp "${artifact}"/cpp/common.pb.{cc,h} proto/
-cp "${artifact}"/cpp/maze_task.pb.{cc,h} proto/
-cp "${artifact}"/cpp/maze_task.grpc.pb.{cc,h} proto/
-cp "${artifact}/manifest.json" proto/
+bash scripts/sync_contract_snapshot.sh
 RL_CLIENT_IMAGE_TAG=training-001 bash build_image.sh
 ```
+
+The synchronization entrypoint reads the explicit `0.9.1` and `linux/arm64`
+identity from `artifact_versions.env`, verifies the manifest, every artifact
+file, and the staged snapshot before and after replacement. It neither discovers
+`latest` nor invokes a host `protoc` to regenerate code.
 
 Enter the development container and start the inference smoke test:
 
@@ -27,6 +28,11 @@ bash ./run.sh --aiserver maze-aiserver:9002
 ```
 
 The Client does not accept a workload argument; the connected AIServer returns the active mode.
+The launcher also validates Behavior Policy scope: training requires
+`training-fragment`, while local test and model evaluation require
+`evaluation-episode`. `start_model` in training logs is only the model snapshot
+at Episode assignment; `pinned_model` in evaluation logs remains fixed for the
+whole Episode.
 
 View previously recorded replay files:
 

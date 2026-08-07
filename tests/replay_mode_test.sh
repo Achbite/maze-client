@@ -13,6 +13,7 @@ set -euo pipefail
 cat >"${RL_SESSION_POLICY_PATH}" <<EOF
 workload=${FAKE_WORKLOAD}
 replay_policy=${FAKE_REPLAY_POLICY}
+behavior_policy_scope=${FAKE_POLICY_SCOPE}
 model_version=6
 model_artifact_digest=e7c005970ade5c38ab4a3f0883deb7adf8956694d6dc30be598c18954941f3d4
 EOF
@@ -33,12 +34,26 @@ RL_CLIENT_BIN="${fake_client}" \
 RL_REPLAY_BIN="${fake_replay}" \
 FAKE_WORKLOAD=training \
 FAKE_REPLAY_POLICY=disabled \
+FAKE_POLICY_SCOPE=training-fragment \
 bash "${repo_dir}/run.sh"
 
 if [ -e "${replay_marker}" ]; then
     echo "training started Replay" >&2
     exit 1
 fi
+
+if RL_CLIENT_BIN="${fake_client}" \
+    RL_REPLAY_BIN="${fake_replay}" \
+    FAKE_WORKLOAD=training \
+    FAKE_REPLAY_POLICY=disabled \
+    FAKE_POLICY_SCOPE=evaluation-episode \
+    bash "${repo_dir}/run.sh" \
+        >"${test_root}/invalid-training-scope.out" 2>&1; then
+    echo "training accepted an evaluation episode policy scope" >&2
+    exit 1
+fi
+grep -q "Training requires fragment-scoped behavior policy" \
+    "${test_root}/invalid-training-scope.out"
 
 if bash "${repo_dir}/replay.sh" training \
     >"${test_root}/replay.out" 2>&1; then
@@ -84,6 +99,7 @@ PY
     RL_VALIDATION_RESULT_PATH="${result_path}" \
     FAKE_WORKLOAD="${workload}" \
     FAKE_REPLAY_POLICY=record-and-serve \
+    FAKE_POLICY_SCOPE=evaluation-episode \
     bash "${repo_dir}/run.sh" \
         >"${test_root}/${workload}.out" 2>&1 &
     run_pid=$!

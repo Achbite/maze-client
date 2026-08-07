@@ -577,7 +577,7 @@ def blocked_bitmap_bytes(blocked, grid_cols, grid_rows):
 def canonical_map_payload(grid_cols, grid_rows, grid_size,
                           start_gx, start_gy, goal_gx, goal_gy,
                           bitmap, action_rule_id=ACTION_RULE_ID):
-    """Return the locked 0.8.0 cross-language canonical v4 byte stream."""
+    """Return the selected cross-language canonical v4 byte stream."""
     import struct
 
     rule = action_rule_id.encode("utf-8")

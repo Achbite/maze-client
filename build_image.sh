@@ -21,7 +21,10 @@ if [ ! -f "${contract_dir}/manifest.json" ] ||
     exit 1
 fi
 
-python3 - "${contract_dir}" "${RL_CONTRACTS_VERSION}" <<'PY'
+python3 - \
+    "${contract_dir}" \
+    "${RL_CONTRACTS_VERSION}" \
+    "${RL_CONTRACTS_PLATFORM}" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -29,7 +32,12 @@ import sys
 
 root = Path(sys.argv[1])
 manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-if manifest.get("package") != "rl-contracts" or manifest.get("version") != sys.argv[2]:
+if (
+    manifest.get("schema_version") != 2
+    or manifest.get("package") != "rl-contracts"
+    or manifest.get("version") != sys.argv[2]
+    or manifest.get("platform") != sys.argv[3]
+):
     raise SystemExit("Repository-local contract identity is invalid")
 files = {
     "common.proto": "common.proto",

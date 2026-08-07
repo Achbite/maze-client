@@ -234,11 +234,23 @@ bool PublishSessionPolicy(const std::string& workload,
     }
     const fs::path temporary =
         path.string() + ".tmp." + std::to_string(::getpid());
+    const char* behavior_policy_scope = "none";
+    const char* model_identity_role = "not-applicable";
+    if (workload == "training") {
+        behavior_policy_scope = "training-fragment";
+        model_identity_role = "episode-start-snapshot";
+    } else if (workload == "local-test" ||
+               workload == "model-evaluation") {
+        behavior_policy_scope = "evaluation-episode";
+        model_identity_role = "episode-pinned";
+    }
     {
         std::ofstream output(temporary);
         if (!output) return false;
         output << "workload=" << workload << "\n"
                << "replay_policy=" << replay_policy << "\n"
+               << "behavior_policy_scope=" << behavior_policy_scope << "\n"
+               << "model_identity_role=" << model_identity_role << "\n"
                << "model_lineage_id=" << policy.model_lineage_id() << "\n"
                << "model_version=" << policy.model_version() << "\n"
                << "model_artifact_digest="
@@ -370,7 +382,7 @@ int main(int argc, char* argv[]) {
                     kActionSchemaDigest) ||
         open_response.task_spec().action_rule_id() !=
             "maze.action.9-way.no-corner-cut.v1") {
-        LOG_ERROR("Main", "OpenSession 返回了无效的 0.8.0 任务身份");
+        LOG_ERROR("Main", "OpenSession 返回了无效的 0.9.1 任务身份");
         Logger::Instance().Close();
         return 1;
     }
@@ -547,10 +559,25 @@ int main(int argc, char* argv[]) {
             chain_failed = true;
             break;
         }
-        LOG_INFO("Main", "Episode %s 开始 mode=%s max_steps=%u model=v%llu",
-                 cursor.episode_id.c_str(), mode.c_str(), assignment.max_steps(),
-                 static_cast<unsigned long long>(
-                     assignment.behavior_policy().model_version()));
+        if (training_assignment) {
+            LOG_INFO(
+                "Main",
+                "Episode %s 开始 mode=%s max_steps=%u start_model=v%llu "
+                "policy_scope=fragment",
+                cursor.episode_id.c_str(), mode.c_str(),
+                assignment.max_steps(),
+                static_cast<unsigned long long>(
+                    assignment.behavior_policy().model_version()));
+        } else {
+            LOG_INFO(
+                "Main",
+                "Episode %s 开始 mode=%s max_steps=%u pinned_model=v%llu "
+                "policy_scope=episode",
+                cursor.episode_id.c_str(), mode.c_str(),
+                assignment.max_steps(),
+                static_cast<unsigned long long>(
+                    assignment.behavior_policy().model_version()));
+        }
 
         while (!g_stop_requested.load()) {
             const bool terminal_report = environment.AllDone();
