@@ -629,7 +629,27 @@ int main(int argc, char* argv[]) {
                         maze::ENVIRONMENT_CONTROL_ADVANCE ||
                     !AcceptCommandReply(cursor,
                                         update_response.lifecycle())) {
-                    LOG_ERROR("Main", "Update 生命周期响应无效");
+                    const auto& reply = update_response.lifecycle();
+                    LOG_ERROR(
+                        "Main",
+                        "Update 生命周期响应无效: frame=%llu control=%d "
+                        "ret=%d result=%d error=%d applied=%llu "
+                        "task=%d session=%d episode=%d evaluation=%d "
+                        "actions=%d message=%s",
+                        static_cast<unsigned long long>(
+                            update_request.frame_id()),
+                        static_cast<int>(
+                            update_response.environment_control()),
+                        reply.ret_code(), static_cast<int>(reply.result()),
+                        static_cast<int>(reply.error_code()),
+                        static_cast<unsigned long long>(
+                            reply.applied_sequence()),
+                        static_cast<int>(reply.task_state()),
+                        static_cast<int>(reply.session_state()),
+                        static_cast<int>(reply.episode_state()),
+                        static_cast<int>(reply.evaluation_state()),
+                        update_response.actions_size(),
+                        reply.message().c_str());
                     chain_failed = true;
                 } else {
                     update_applied = true;
