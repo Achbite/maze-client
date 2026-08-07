@@ -1,16 +1,19 @@
 #include "grpc/grpc_client.h"
+#include "grpc/update_flow_control.h"
 #include "env/maze_env.h"
 #include "config/config_loader.h"
 #include "viz/viz_recorder.h"
 #include "log/logger.h"
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 #include <unistd.h>
@@ -382,7 +385,7 @@ int main(int argc, char* argv[]) {
                     kActionSchemaDigest) ||
         open_response.task_spec().action_rule_id() !=
             "maze.action.9-way.no-corner-cut.v1") {
-        LOG_ERROR("Main", "OpenSession 返回了无效的 0.9.1 任务身份");
+        LOG_ERROR("Main", "OpenSession 返回了无效的 0.10.0 任务身份");
         Logger::Instance().Close();
         return 1;
     }
@@ -599,12 +602,44 @@ int main(int argc, char* argv[]) {
             }
 
             maze::UpdateRsp update_response;
-            if (!client.Update(update_request, update_response) ||
-                !AcceptCommandReply(cursor, update_response.lifecycle())) {
-                LOG_ERROR("Main", "Update 失败或生命周期响应无效");
-                chain_failed = true;
+            bool update_applied = false;
+            while (!g_stop_requested.load()) {
+                update_response.Clear();
+                if (!client.Update(update_request, update_response)) {
+                    LOG_ERROR("Main", "Update RPC 失败");
+                    chain_failed = true;
+                    break;
+                }
+                if (update_response.environment_control() ==
+                    maze::ENVIRONMENT_CONTROL_WAIT_FOR_TRAINING_CAPACITY) {
+                    if (!maze_client::IsTrainingCapacityWait(
+                            update_response, cursor.next_sequence,
+                            cursor.task_state, cursor.session_state,
+                            cursor.episode_state,
+                            cursor.evaluation_state)) {
+                        LOG_ERROR("Main", "Update WAIT 响应无效");
+                        chain_failed = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(
+                        update_response.retry_after_ms()));
+                    continue;
+                }
+                if (update_response.environment_control() !=
+                        maze::ENVIRONMENT_CONTROL_ADVANCE ||
+                    !AcceptCommandReply(cursor,
+                                        update_response.lifecycle())) {
+                    LOG_ERROR("Main", "Update 生命周期响应无效");
+                    chain_failed = true;
+                } else {
+                    update_applied = true;
+                }
                 break;
             }
+            if (g_stop_requested.load() && !update_applied) {
+                --cursor.next_sequence;
+            }
+            if (chain_failed || g_stop_requested.load()) break;
             if (update_response.task_stop_requested()) {
                 if (update_response.task_stop_reason() !=
                         maze::MAZE_TERMINATION_REASON_TASK_STOP ||

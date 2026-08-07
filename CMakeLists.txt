@@ -84,4 +84,18 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_contract.py
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
+
+    add_executable(update_flow_control_test
+        tests/update_flow_control_test.cpp
+        ${PROTO_GEN_DIR}/common.pb.cc
+        ${PROTO_GEN_DIR}/maze_task.pb.cc
+    )
+    target_include_directories(update_flow_control_test PRIVATE
+        ${COMMON_INCLUDES}
+    )
+    target_link_libraries(update_flow_control_test PRIVATE
+        protobuf::libprotobuf
+    )
+    add_test(NAME update_flow_control_contract
+             COMMAND update_flow_control_test)
 endif()

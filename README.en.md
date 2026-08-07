@@ -15,7 +15,7 @@ bash scripts/sync_contract_snapshot.sh
 RL_CLIENT_IMAGE_TAG=training-001 bash build_image.sh
 ```
 
-The synchronization entrypoint reads the explicit `0.9.1` and `linux/arm64`
+The synchronization entrypoint reads the explicit `0.10.0` and `linux/arm64`
 identity from `artifact_versions.env`, verifies the manifest, every artifact
 file, and the staged snapshot before and after replacement. It neither discovers
 `latest` nor invokes a host `protoc` to regenerate code.
