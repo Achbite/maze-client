@@ -98,4 +98,18 @@ if(BUILD_TESTING)
     )
     add_test(NAME update_flow_control_contract
              COMMAND update_flow_control_test)
+
+    add_executable(lifecycle_command_transaction_test
+        tests/lifecycle_command_transaction_test.cpp
+        ${PROTO_GEN_DIR}/common.pb.cc
+        ${PROTO_GEN_DIR}/maze_task.pb.cc
+    )
+    target_include_directories(lifecycle_command_transaction_test PRIVATE
+        ${COMMON_INCLUDES}
+    )
+    target_link_libraries(lifecycle_command_transaction_test PRIVATE
+        protobuf::libprotobuf
+    )
+    add_test(NAME lifecycle_command_transaction_contract
+             COMMAND lifecycle_command_transaction_test)
 endif()

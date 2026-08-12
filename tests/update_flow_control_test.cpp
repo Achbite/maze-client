@@ -33,7 +33,7 @@ maze::UpdateRsp MakeWait() {
 
 bool Valid(const maze::UpdateRsp& response) {
     return maze_client::IsTrainingCapacityWait(
-        response, 10, maze::TASK_STATE_TRAINING,
+        response, 9, maze::TASK_STATE_TRAINING,
         maze::SESSION_STATE_EPISODE_ACTIVE, maze::EPISODE_STATE_RUNNING,
         maze::EVALUATION_STATE_INACTIVE);
 }

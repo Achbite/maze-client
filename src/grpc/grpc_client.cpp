@@ -21,8 +21,11 @@ template <typename Response, typename Invoke>
 bool InvokeIdempotent(const char* operation,
                       bool update_deadline,
                       Response& response,
+                      bool& outcome_unknown,
                       Invoke invoke) {
+    outcome_unknown = false;
     grpc::Status last_status;
+    bool saw_non_ok_transport_status = false;
     for (int attempt = 1; attempt <= 2; ++attempt) {
         grpc::ClientContext context;
         if (update_deadline) {
@@ -36,14 +39,25 @@ bool InvokeIdempotent(const char* operation,
             response.Swap(&candidate);
             return true;
         }
-        const bool ambiguous_transport_failure =
-            last_status.error_code() == grpc::StatusCode::UNAVAILABLE ||
-            last_status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED;
-        if (!ambiguous_transport_failure || attempt == 2) break;
+        // A non-OK unary status never proves that the server did not commit
+        // the command. Only the exact protobuf lifecycle reply can provide
+        // that evidence, so every transport failure remains outcome-unknown.
+        saw_non_ok_transport_status = true;
+        const auto code = last_status.error_code();
+        const bool retryable_transport_failure =
+            code == grpc::StatusCode::ABORTED ||
+            code == grpc::StatusCode::CANCELLED ||
+            code == grpc::StatusCode::DEADLINE_EXCEEDED ||
+            code == grpc::StatusCode::INTERNAL ||
+            code == grpc::StatusCode::RESOURCE_EXHAUSTED ||
+            code == grpc::StatusCode::UNKNOWN ||
+            code == grpc::StatusCode::UNAVAILABLE;
+        if (!retryable_transport_failure || attempt == 2) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     LOG_ERROR("GrpcClient", "%s RPC 失败: %s", operation,
               last_status.error_message().c_str());
+    outcome_unknown = saw_non_ok_transport_status;
     return false;
 }
 
@@ -79,16 +93,16 @@ bool GrpcClient::IsConnected() const {
 bool GrpcClient::OpenSession(const maze::OpenSessionReq& req,
                              maze::OpenSessionRsp& rsp) {
     return InvokeIdempotent(
-        "OpenSession", false, rsp,
+        "OpenSession", false, rsp, last_rpc_outcome_unknown_,
         [&](grpc::ClientContext& context, maze::OpenSessionRsp& candidate) {
             return stub_->OpenSession(&context, req, &candidate);
         });
 }
 
-// ---- 兼容初始化 RPC ----
+// ---- 0.10.0 canonical map 初始化与校验 RPC ----
 bool GrpcClient::Init(const maze::InitReq& req, maze::InitRsp& rsp) {
     return InvokeIdempotent(
-        "Init", false, rsp,
+        "Init", false, rsp, last_rpc_outcome_unknown_,
         [&](grpc::ClientContext& context, maze::InitRsp& candidate) {
             return stub_->Init(&context, req, &candidate);
         });
@@ -97,7 +111,7 @@ bool GrpcClient::Init(const maze::InitReq& req, maze::InitRsp& rsp) {
 bool GrpcClient::BeginEpisode(const maze::BeginEpisodeReq& req,
                               maze::BeginEpisodeRsp& rsp) {
     return InvokeIdempotent(
-        "BeginEpisode", false, rsp,
+        "BeginEpisode", false, rsp, last_rpc_outcome_unknown_,
         [&](grpc::ClientContext& context,
             maze::BeginEpisodeRsp& candidate) {
             return stub_->BeginEpisode(&context, req, &candidate);
@@ -107,7 +121,7 @@ bool GrpcClient::BeginEpisode(const maze::BeginEpisodeReq& req,
 // ---- 帧同步 RPC ----
 bool GrpcClient::Update(const maze::UpdateReq& req, maze::UpdateRsp& rsp) {
     return InvokeIdempotent(
-        "Update", true, rsp,
+        "Update", true, rsp, last_rpc_outcome_unknown_,
         [&](grpc::ClientContext& context, maze::UpdateRsp& candidate) {
             return stub_->Update(&context, req, &candidate);
         });
@@ -116,7 +130,7 @@ bool GrpcClient::Update(const maze::UpdateReq& req, maze::UpdateRsp& rsp) {
 // ---- Episode 结束 RPC ----
 bool GrpcClient::EndEpisode(const maze::EndEpisodeReq& req, maze::EndEpisodeRsp& rsp) {
     return InvokeIdempotent(
-        "EndEpisode", false, rsp,
+        "EndEpisode", false, rsp, last_rpc_outcome_unknown_,
         [&](grpc::ClientContext& context, maze::EndEpisodeRsp& candidate) {
             return stub_->EndEpisode(&context, req, &candidate);
         });
@@ -125,7 +139,7 @@ bool GrpcClient::EndEpisode(const maze::EndEpisodeReq& req, maze::EndEpisodeRsp&
 bool GrpcClient::AbortEpisode(const maze::AbortEpisodeReq& req,
                               maze::AbortEpisodeRsp& rsp) {
     return InvokeIdempotent(
-        "AbortEpisode", false, rsp,
+        "AbortEpisode", false, rsp, last_rpc_outcome_unknown_,
         [&](grpc::ClientContext& context,
             maze::AbortEpisodeRsp& candidate) {
             return stub_->AbortEpisode(&context, req, &candidate);
@@ -136,11 +150,15 @@ bool GrpcClient::CloseSession(const maze::CloseSessionReq& req,
                               maze::CloseSessionRsp& rsp) {
     if (!connected_ || !stub_) return false;
     return InvokeIdempotent(
-        "CloseSession", false, rsp,
+        "CloseSession", false, rsp, last_rpc_outcome_unknown_,
         [&](grpc::ClientContext& context,
             maze::CloseSessionRsp& candidate) {
             return stub_->CloseSession(&context, req, &candidate);
         });
+}
+
+bool GrpcClient::LastRpcOutcomeUnknown() const {
+    return last_rpc_outcome_unknown_;
 }
 
 // ---- 断开连接，释放 Channel 和 Stub ----

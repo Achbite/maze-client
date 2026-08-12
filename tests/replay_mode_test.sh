@@ -6,6 +6,19 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root="$(mktemp -d)"
 trap 'rm -rf "${test_root}"' EXIT
 
+python3 - "${repo_dir}/Dockerfile" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+document = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"^ENV RL_SESSION_POLICY_PATH=(\S+)$", document, re.MULTILINE)
+assert match is not None, "Dockerfile must declare RL_SESSION_POLICY_PATH"
+policy_path = match.group(1)
+assert policy_path == "/tmp/rl-client-session-policy"
+assert f'CMD ["test", "-s", "{policy_path}"]' in document
+PY
+
 fake_client="${test_root}/maze_client"
 cat >"${fake_client}" <<'SH'
 #!/usr/bin/env bash

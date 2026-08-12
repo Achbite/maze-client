@@ -27,9 +27,11 @@ public:
     bool EndEpisode(const maze::EndEpisodeReq& req, maze::EndEpisodeRsp& rsp);     // Episode 结束
     bool AbortEpisode(const maze::AbortEpisodeReq& req, maze::AbortEpisodeRsp& rsp);
     bool CloseSession(const maze::CloseSessionReq& req, maze::CloseSessionRsp& rsp);
+    bool LastRpcOutcomeUnknown() const;
 
 private:
     std::shared_ptr<grpc::Channel> channel_;                // gRPC 通道
     std::unique_ptr<maze::MazeTaskService::Stub> stub_;
     bool connected_ = false;
+    bool last_rpc_outcome_unknown_ = false;
 };

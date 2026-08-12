@@ -50,5 +50,5 @@ WORKDIR /opt/rl/maze-client
 ENV RL_SESSION_POLICY_PATH=/tmp/rl-client-session-policy
 EXPOSE 9004
 HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
-    CMD ["test", "-s", "/tmp/maze-client-session-policy"]
+    CMD ["test", "-s", "/tmp/rl-client-session-policy"]
 ENTRYPOINT ["/opt/rl/maze-client/scripts/entrypoint.sh"]
