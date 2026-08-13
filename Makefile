@@ -1,4 +1,4 @@
-.PHONY: shell build test replay dev-clean dev-image
+.PHONY: shell build test verify replay dev-clean dev-image
 
 shell:
 	@bash scripts/dev_container.sh shell
@@ -8,6 +8,9 @@ build:
 
 test:
 	@bash scripts/dev_container.sh test
+
+verify:
+	@bash scripts/dev_container.sh verify
 
 replay:
 	@bash scripts/dev_container.sh replay

@@ -9,6 +9,8 @@ network_name="rl-training-dev"
 tag="${RL_CLIENT_DEV_IMAGE_TAG:-test-001}"
 runtime_image="rl-training/maze-client:${RL_CLIENT_IMAGE_TAG:-test-001}"
 dev_image="rl-training/maze-client-dev:${tag}"
+ccache_volume="rl-training-maze-client-ccache"
+ccache_dir="/var/cache/ccache"
 replay_host_port=9004
 replay_tunnel_socket="${TMPDIR:-/tmp}/rl-training-client-dev-9004.sock"
 colima_ssh_config="${RL_COLIMA_SSH_CONFIG:-${HOME}/.colima/_lima/colima/ssh.config}"
@@ -100,9 +102,17 @@ ensure_container() {
     if ! docker network inspect "${network_name}" >/dev/null 2>&1; then
         docker network create "${network_name}" >/dev/null
     fi
+    if ! docker volume inspect "${ccache_volume}" >/dev/null 2>&1; then
+        docker volume create "${ccache_volume}" >/dev/null
+    fi
     if docker container inspect "${container_name}" >/dev/null 2>&1; then
+        expected_image_id="$(docker image inspect --format '{{.Id}}' "${dev_image}")"
+        actual_image_id="$(docker inspect --format '{{.Image}}' "${container_name}")"
         replay_binding="$(docker port "${container_name}" 9004/tcp 2>/dev/null || true)"
-        if [ "${replay_binding}" != "127.0.0.1:${replay_host_port}" ]; then
+        cache_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/cache/ccache"}}{{.Name}}{{end}}{{end}}' "${container_name}")"
+        if [ "${actual_image_id}" != "${expected_image_id}" ] || \
+           [ "${replay_binding}" != "127.0.0.1:${replay_host_port}" ] || \
+           [ "${cache_mount}" != "${ccache_volume}" ]; then
             docker rm --force "${container_name}" >/dev/null
         fi
     fi
@@ -114,8 +124,10 @@ ensure_container() {
             --network-alias "${container_name}" \
             --network-alias "maze-client" \
             --env RL_REPLAY_PORT=9004 \
+            --env "CCACHE_DIR=${ccache_dir}" \
             --publish "127.0.0.1:${replay_host_port}:9004" \
             --volume "${repo_dir}:/workspace/maze-client" \
+            --volume "${ccache_volume}:${ccache_dir}" \
         )
         docker run "${run_args[@]}" "${dev_image}" >/dev/null
     elif [ "$(docker inspect --format '{{.State.Running}}' "${container_name}")" != "true" ]; then
@@ -135,15 +147,18 @@ case "${action}" in
     build)
         ensure_container
         docker exec "${container_name}" sh -lc \
-            "cd /workspace/maze-client && ./build.sh"
+            "cd /workspace/maze-client && ./build.sh build"
         ;;
     test)
         ensure_container
+        docker exec --env "TEST_PATTERN=${TEST_PATTERN:-}" \
+            "${container_name}" sh -lc \
+            "cd /workspace/maze-client && ./build.sh test"
+        ;;
+    verify)
+        ensure_container
         docker exec "${container_name}" sh -lc \
-            "cd /workspace/maze-client && \
-             ./build.sh && \
-             python3 -m py_compile tools/viz_player/maze_viz_server.py && \
-             bash tests/replay_mode_test.sh"
+            "cd /workspace/maze-client && ./build.sh verify"
         ;;
     replay)
         ensure_container

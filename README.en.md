@@ -1,13 +1,10 @@
 # Maze Client
 
-English | [简体中文](README.md)
+[简体中文](README.md) | English
 
-C++ maze environment client. It obtains the workload and replay policy from AIServer through `OpenSession`, then executes episodes. `local-test` and `model-evaluation` automatically expose local replay on `9004`; `training` does not start replay.
+Maze Client connects to AIServer and executes Episodes. Start the full chain from [rl-framework](../rl-framework/README.en.md).
 
-## Quick Start
-
-Synchronize the Contracts snapshot from the immutable artifact selected by an
-explicit version and platform, then build the image:
+## 1. Prepare Contracts and build the image
 
 ```bash
 (cd ../rl-contracts && bash build_artifact.sh)
@@ -15,41 +12,54 @@ bash scripts/sync_contract_snapshot.sh
 RL_CLIENT_IMAGE_TAG=training-001 bash build_image.sh
 ```
 
-The synchronization entrypoint reads the explicit `0.10.0` and `linux/arm64`
-identity from `artifact_versions.env`, verifies the manifest, every artifact
-file, and the staged snapshot before and after replacement. It neither discovers
-`latest` nor invokes a host `protoc` to regenerate code.
+## 2. Incremental build and tests
 
-Enter the development container and start the inference smoke test:
+```bash
+# Build the development image
+RL_CLIENT_IMAGE_TAG=training-001 make dev-image
+
+# Incrementally build only the main executable; do not run CTest
+make build
+
+# Build test targets and run CTest
+make test
+
+# Focus tests
+TEST_PATTERN=lifecycle make test
+
+# Full build, full CTest, and auxiliary checks
+make verify
+```
+
+The development container uses persistent ccache. `ninja: no work to do.` does not automatically run tests.
+
+## 3. Connect to AIServer manually
 
 ```bash
 make shell
 bash ./run.sh --aiserver maze-aiserver:9002
 ```
 
-The Client does not accept a workload argument; the connected AIServer returns the active mode.
-The launcher also validates Behavior Policy scope: training requires
-`training-fragment`, while local test and model evaluation require
-`evaluation-episode`. `start_model` in training logs is only the model snapshot
-at Episode assignment; `pinned_model` in evaluation logs remains fixed for the
-whole Episode.
+Client does not accept a workload argument. The actual mode comes from the AIServer `OpenSession` response.
 
-View previously recorded replay files:
+## 4. View a local replay
+
+`local-test` and `model-evaluation` use replay port `9004`; Training does not start replay.
 
 ```bash
 bash ./replay.sh local-test
 ```
 
-Browser URL:
+Open:
 
 ```text
 http://127.0.0.1:9004/
 ```
 
-## Tests
+## 5. Remove the development container
 
 ```bash
-make test
+make dev-clean
 ```
 
 ## License

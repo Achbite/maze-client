@@ -332,7 +332,7 @@ int main(int argc, char* argv[]) {
                     kActionSchemaDigest) ||
         open_response.task_spec().action_rule_id() !=
             "maze.action.9-way.no-corner-cut.v1") {
-        LOG_ERROR("Main", "OpenSession 返回了无效的 0.10.0 任务身份");
+        LOG_ERROR("Main", "OpenSession 返回了无效的 0.11.0 任务身份");
         Logger::Instance().Close();
         return 1;
     }

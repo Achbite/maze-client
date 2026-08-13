@@ -99,7 +99,7 @@ bool GrpcClient::OpenSession(const maze::OpenSessionReq& req,
         });
 }
 
-// ---- 0.10.0 canonical map 初始化与校验 RPC ----
+// ---- 0.11.0 canonical map 初始化与校验 RPC ----
 bool GrpcClient::Init(const maze::InitReq& req, maze::InitRsp& rsp) {
     return InvokeIdempotent(
         "Init", false, rsp, last_rpc_outcome_unknown_,

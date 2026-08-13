@@ -48,6 +48,14 @@ def verify_snapshot(
     checksums = manifest.get("files", {})
     if not isinstance(checksums, dict):
         fail("contract manifest files table is invalid")
+    canonical_files = json.dumps(
+        checksums, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    if manifest.get("artifact_digest") != {
+        "algorithm": "sha256",
+        "hex": hashlib.sha256(canonical_files).hexdigest(),
+    }:
+        fail("contract snapshot artifact digest is invalid")
     for artifact_name, local_name in SNAPSHOT_FILES.items():
         path = root / local_name
         expected = checksums.get(artifact_name)
