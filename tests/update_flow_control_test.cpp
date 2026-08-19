@@ -27,15 +27,13 @@ maze::UpdateRsp MakeWait() {
     lifecycle->set_task_state(maze::TASK_STATE_TRAINING);
     lifecycle->set_session_state(maze::SESSION_STATE_EPISODE_ACTIVE);
     lifecycle->set_episode_state(maze::EPISODE_STATE_RUNNING);
-    lifecycle->set_evaluation_state(maze::EVALUATION_STATE_INACTIVE);
     return response;
 }
 
 bool Valid(const maze::UpdateRsp& response) {
     return maze_client::IsTrainingCapacityWait(
         response, 9, maze::TASK_STATE_TRAINING,
-        maze::SESSION_STATE_EPISODE_ACTIVE, maze::EPISODE_STATE_RUNNING,
-        maze::EVALUATION_STATE_INACTIVE);
+        maze::SESSION_STATE_EPISODE_ACTIVE, maze::EPISODE_STATE_RUNNING);
 }
 
 }  // namespace

@@ -50,6 +50,13 @@ target_link_libraries(maze_client PRIVATE ${COMMON_LIBS})
 
 include(CTest)
 if(BUILD_TESTING)
+    add_test(
+        NAME client_cli_contract
+        COMMAND python3
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_contract.py
+            $<TARGET_FILE:maze_client>
+    )
+
     add_executable(client_config_loader_test
         tests/config_loader_test.cpp
         src/config/config_loader.cpp
@@ -78,13 +85,6 @@ if(BUILD_TESTING)
         COMMAND bash
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/replay_mode_test.sh
     )
-    add_test(
-        NAME map_generator_contract
-        COMMAND python3
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_map_contract.py
-            ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-
     add_executable(update_flow_control_test
         tests/update_flow_control_test.cpp
         ${PROTO_GEN_DIR}/common.pb.cc

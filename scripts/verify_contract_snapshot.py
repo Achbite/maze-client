@@ -23,7 +23,11 @@ def fail(message: str) -> None:
 
 
 def verify_snapshot(
-    root: Path, expected_version: str, expected_platform: str
+    root: Path,
+    expected_version: str,
+    expected_platform: str,
+    *,
+    artifact_layout: bool = False,
 ) -> dict:
     manifest_path = root / "manifest.json"
     if not manifest_path.is_file():
@@ -57,7 +61,7 @@ def verify_snapshot(
     }:
         fail("contract snapshot artifact digest is invalid")
     for artifact_name, local_name in SNAPSHOT_FILES.items():
-        path = root / local_name
+        path = root / (artifact_name if artifact_layout else local_name)
         expected = checksums.get(artifact_name)
         if not path.is_file() or not expected:
             fail(f"contract snapshot file is missing: {path}")
@@ -68,12 +72,19 @@ def verify_snapshot(
 
 
 def main() -> None:
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5) or (
+        len(sys.argv) == 5 and sys.argv[4] != "--artifact-layout"
+    ):
         fail(
             "usage: verify_contract_snapshot.py "
-            "<proto-dir> <version> <platform>"
+            "<proto-dir> <version> <platform> [--artifact-layout]"
         )
-    verify_snapshot(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
+    verify_snapshot(
+        Path(sys.argv[1]),
+        sys.argv[2],
+        sys.argv[3],
+        artifact_layout=len(sys.argv) == 5,
+    )
 
 
 if __name__ == "__main__":

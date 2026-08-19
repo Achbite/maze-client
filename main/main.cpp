@@ -1,5 +1,6 @@
 #include "grpc/grpc_client.h"
 #include "grpc/lifecycle_command_transaction.h"
+#include "grpc/policy_binding_contract.h"
 #include "grpc/update_flow_control.h"
 #include "grpc/workload_contract.h"
 #include "env/maze_env.h"
@@ -10,13 +11,16 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <unistd.h>
 
@@ -25,13 +29,17 @@ namespace common = rl::common::v1;
 namespace {
 
 using maze_client::AcceptCommandReply;
+using maze_client::AgentExecutionCursor;
+using maze_client::AttachExecutedActionReceipt;
 using maze_client::FillCommand;
 using maze_client::IsConclusiveRejected;
 using maze_client::IsCommandWait;
 using maze_client::LifecycleAccepted;
+using maze_client::PrepareAppliedAgentUpdate;
+using maze_client::RecordExecutedAction;
 
 constexpr const char* kDefaultConfigPath = "configs/client_config.yaml";
-constexpr std::uint32_t kSessionProtocolVersion = 3;
+constexpr std::uint32_t kSessionProtocolVersion = 4;
 constexpr const char* kObservationSchemaId = "maze.observation.v3";
 constexpr std::uint32_t kObservationSchemaVersion = 1;
 constexpr const char* kObservationSchemaDigest =
@@ -43,6 +51,26 @@ constexpr const char* kActionSchemaDigest =
 constexpr const char* kPolicyDistributionSchema = "categorical.logits.v1";
 constexpr std::chrono::milliseconds kBeginWaitRetryInterval{100};
 
+void PrintUsage() {
+    std::fputs(
+        "Usage: maze_client [options]\n"
+        "\n"
+        "Configuration is resolved once as CLI > allowlisted environment > "
+        "config.\n"
+        "--config is a meta option; every business override below replaces "
+        "the\n"
+        "named field in the selected config. Workload and task facts still "
+        "come\n"
+        "from AIServer OpenSession/TaskSpec.\n"
+        "\n"
+        "  --config PATH             select the YAML config file\n"
+        "  --aiserver HOST:PORT      -> network.server_host/server_port\n"
+        "  --replay-dir PATH         -> viz.output_dir\n"
+        "  --replay-port PORT        -> viz.server_port\n"
+        "  --help, -h                show this help and exit\n",
+        stdout);
+}
+
 const char* kActionNames[9] = {
     "不动", "上", "右上", "右", "右下", "下", "左下", "左", "左上"
 };
@@ -51,20 +79,8 @@ std::atomic<bool> g_stop_requested{false};
 
 void HandleSignal(int) { g_stop_requested.store(true); }
 
-bool IsLowerSha256(const std::string& value) {
-    if (value.size() != 64) return false;
-    for (char character : value) {
-        if (!((character >= '0' && character <= '9') ||
-              (character >= 'a' && character <= 'f'))) {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool IsDigest(const common::ContentDigest& digest) {
-    return digest.algorithm() == common::DIGEST_ALGORITHM_SHA256 &&
-           IsLowerSha256(digest.hex());
+    return maze_client::IsSha256Digest(digest);
 }
 
 void SetSha256(common::ContentDigest* digest, const std::string& hex) {
@@ -94,7 +110,6 @@ bool SameSchema(const common::SchemaIdentity& schema,
 
 bool ValidTaskIdentity(const maze::TaskIdentity& identity) {
     return !identity.task_contract_id().empty() &&
-           !identity.task_id().empty() &&
            identity.task_revision() > 0 &&
            IsDigest(identity.task_config_digest()) &&
            !identity.fixed_map_id().empty() &&
@@ -106,25 +121,10 @@ bool SameTaskIdentity(const maze::TaskIdentity& lhs,
     return lhs.SerializeAsString() == rhs.SerializeAsString();
 }
 
-bool SamePolicy(const maze::BehaviorPolicyBinding& lhs,
-                const maze::BehaviorPolicyBinding& rhs) {
-    return lhs.SerializeAsString() == rhs.SerializeAsString();
-}
-
-bool ValidPolicy(const maze::BehaviorPolicyBinding& policy) {
-    return !policy.model_lineage_id().empty() &&
-           IsDigest(policy.model_artifact_digest()) &&
-           IsDigest(policy.model_manifest_digest()) &&
-           policy.distribution_schema_id() == kPolicyDistributionSchema &&
-           IsDigest(policy.policy_spec_digest());
-}
-
 const char* WorkloadName(maze::WorkloadMode workload) {
     switch (workload) {
         case maze::WORKLOAD_MODE_TRAINING: return "training";
-        case maze::WORKLOAD_MODE_INFERENCE_SMOKE: return "local-test";
-        case maze::WORKLOAD_MODE_MODEL_EVALUATION: return "model-evaluation";
-        case maze::WORKLOAD_MODE_MAP_VALIDATION: return "map-validation";
+        case maze::WORKLOAD_MODE_EVALUATION: return "evaluation";
         default: return "";
     }
 }
@@ -140,19 +140,8 @@ const char* ReplayPolicyName(maze::ReplayPolicy policy) {
 const char* EpisodeModeName(maze::EpisodeMode mode) {
     switch (mode) {
         case maze::EPISODE_MODE_TRAINING: return "training";
-        case maze::EPISODE_MODE_EVALUATION_ARGMAX: return "evaluation-argmax";
-        case maze::EPISODE_MODE_EVALUATION_STOCHASTIC:
-            return "evaluation-stochastic";
+        case maze::EPISODE_MODE_EVALUATION: return "evaluation";
         default: return "";
-    }
-}
-
-int CurriculumMultiplier(maze::CurriculumStage stage) {
-    switch (stage) {
-        case maze::CURRICULUM_STAGE_8X: return 8;
-        case maze::CURRICULUM_STAGE_4X: return 4;
-        case maze::CURRICULUM_STAGE_2X: return 2;
-        default: return 0;
     }
 }
 
@@ -169,9 +158,22 @@ maze::MazeTerminationReason ToProtoTerminationReason(
     }
 }
 
+const char* AgentStateName(AgentTerminationReason reason) {
+    switch (reason) {
+        case AgentTerminationReason::GoalReached:
+            return "goal_reached";
+        case AgentTerminationReason::TimeLimit:
+            return "time_limit";
+        case AgentTerminationReason::Active:
+        default:
+            return "active";
+    }
+}
+
 bool PublishSessionPolicy(const std::string& workload,
                           const std::string& replay_policy,
-                          const maze::BehaviorPolicyBinding& policy) {
+                          const maze::BehaviorPolicyBinding& policy,
+                          const VizConfig& viz) {
     const char* raw_path = std::getenv("RL_SESSION_POLICY_PATH");
     if (raw_path == nullptr || raw_path[0] == '\0') return true;
 
@@ -189,8 +191,7 @@ bool PublishSessionPolicy(const std::string& workload,
     if (workload == "training") {
         behavior_policy_scope = "training-fragment";
         model_identity_role = "episode-start-snapshot";
-    } else if (workload == "local-test" ||
-               workload == "model-evaluation") {
+    } else if (workload == "evaluation") {
         behavior_policy_scope = "evaluation-episode";
         model_identity_role = "episode-pinned";
     }
@@ -201,12 +202,16 @@ bool PublishSessionPolicy(const std::string& workload,
                << "replay_policy=" << replay_policy << "\n"
                << "behavior_policy_scope=" << behavior_policy_scope << "\n"
                << "model_identity_role=" << model_identity_role << "\n"
-               << "model_lineage_id=" << policy.model_lineage_id() << "\n"
-               << "model_version=" << policy.model_version() << "\n"
+               << "replay_output_dir=" << viz.output_dir << "\n"
+               << "replay_server_port=" << viz.server_port << "\n"
                << "model_artifact_digest="
-               << policy.model_artifact_digest().hex() << "\n"
-               << "model_manifest_digest="
-               << policy.model_manifest_digest().hex() << "\n";
+               << policy.model_artifact_digest().hex() << "\n";
+        if (workload == "training") {
+            output << "model_lineage_id=" << policy.model_lineage_id() << "\n"
+                   << "model_step=" << policy.model_step() << "\n"
+                   << "model_manifest_digest="
+                   << policy.model_manifest_digest().hex() << "\n";
+        }
         output.flush();
         if (!output) {
             fs::remove(temporary, error);
@@ -221,28 +226,103 @@ bool PublishSessionPolicy(const std::string& workload,
     return true;
 }
 
-std::string ResolveTaskMapFile(const std::string& registry_dir,
-                               const std::string& map_id) {
-    if (registry_dir.empty() || map_id.empty()) return "";
-    for (char character : map_id) {
-        const bool valid =
-            (character >= 'a' && character <= 'z') ||
-            (character >= 'A' && character <= 'Z') ||
-            (character >= '0' && character <= '9') ||
-            character == '_' || character == '-';
-        if (!valid) return "";
+bool ParseCommandLine(int argc,
+                      char* argv[],
+                      std::string& config_path,
+                      ClientConfigOverrides& overrides,
+                      std::string& error) {
+    config_path = kDefaultConfigPath;
+    bool config_seen = false;
+    bool aiserver_seen = false;
+    bool replay_dir_seen = false;
+    bool replay_port_seen = false;
+    const auto require_value = [&](int index, const char* option) {
+        if (index + 1 >= argc || argv[index + 1][0] == '\0') {
+            error = std::string(option) +
+                    " requires exactly one non-empty value";
+            return false;
+        }
+        return true;
+    };
+    const auto parse_port = [&](const std::string& value,
+                                const char* option,
+                                int& port) {
+        try {
+            std::size_t consumed = 0;
+            port = std::stoi(value, &consumed);
+            if (consumed != value.size() || std::to_string(port) != value ||
+                port <= 0 || port > 65535) {
+                throw std::invalid_argument("port");
+            }
+        } catch (...) {
+            error = std::string(option) + " port must be in [1, 65535]";
+            return false;
+        }
+        return true;
+    };
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument(argv[index]);
+        if (argument == "--config") {
+            if (config_seen || !require_value(index, "--config")) {
+                error = "--config requires exactly one non-empty value";
+                return false;
+            }
+            config_seen = true;
+            config_path = argv[++index];
+        } else if (argument == "--aiserver") {
+            if (aiserver_seen || !require_value(index, "--aiserver")) {
+                error = "--aiserver requires exactly one host:port";
+                return false;
+            }
+            aiserver_seen = true;
+            const std::string address(argv[++index]);
+            const auto separator = address.rfind(':');
+            if (separator == std::string::npos || separator == 0 ||
+                separator + 1 >= address.size() ||
+                address.find_first_of(" \t\r\n") != std::string::npos) {
+                error = "--aiserver requires exactly one host:port";
+                return false;
+            }
+            int port = 0;
+            if (!parse_port(address.substr(separator + 1), "--aiserver",
+                            port)) {
+                return false;
+            }
+            overrides.server_host = address.substr(0, separator);
+            overrides.server_port = port;
+        } else if (argument == "--replay-dir") {
+            if (replay_dir_seen || !require_value(index, "--replay-dir")) {
+                error = "--replay-dir requires exactly one non-empty path";
+                return false;
+            }
+            replay_dir_seen = true;
+            const std::string value(argv[++index]);
+            if (value.front() == ' ' || value.back() == ' ' ||
+                value.find_first_of("\r\n") != std::string::npos) {
+                error = "--replay-dir path is invalid";
+                return false;
+            }
+            overrides.replay_output_dir = value;
+        } else if (argument == "--replay-port") {
+            if (replay_port_seen || !require_value(index, "--replay-port")) {
+                error = "--replay-port requires exactly one port";
+                return false;
+            }
+            replay_port_seen = true;
+            int port = 0;
+            if (!parse_port(argv[++index], "--replay-port", port)) {
+                return false;
+            }
+            overrides.replay_server_port = port;
+        } else if (argument.rfind("--", 0) == 0) {
+            error = "unknown argument: " + argument;
+            return false;
+        } else {
+            error = "positional arguments are not supported: " + argument;
+            return false;
+        }
     }
-    std::error_code error;
-    const std::filesystem::path root =
-        std::filesystem::weakly_canonical(registry_dir, error);
-    if (error || !std::filesystem::is_directory(root)) return "";
-    const std::filesystem::path candidate =
-        std::filesystem::weakly_canonical(root / (map_id + ".json"), error);
-    if (error || candidate.parent_path() != root ||
-        !std::filesystem::is_regular_file(candidate)) {
-        return "";
-    }
-    return candidate.string();
+    return true;
 }
 
 std::string BuildVizJson(const MazeEnv& env,
@@ -271,17 +351,37 @@ std::string BuildVizJson(const MazeEnv& env,
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    if (argc == 2 &&
+        (std::string(argv[1]) == "--help" ||
+         std::string(argv[1]) == "-h")) {
+        PrintUsage();
+        return 0;
+    }
     std::signal(SIGINT, HandleSignal);
     std::signal(SIGTERM, HandleSignal);
     Logger::Instance().Init("log");
     Logger::Instance().SetConsoleLevel(LogLevel::INFO);
     Logger::Instance().SetFileLevel(LogLevel::DEBUG);
 
-    const char* config_path = argc > 1 ? argv[1] : kDefaultConfigPath;
-    ClientConfig config;
-    if (!LoadClientConfig(config_path, config)) {
+    std::string config_path;
+    ClientConfigOverrides config_overrides;
+    std::string argument_error;
+    if (!ParseCommandLine(argc, argv, config_path, config_overrides,
+                          argument_error)) {
+        LOG_ERROR("Main", "命令参数无效: %s", argument_error.c_str());
         Logger::Instance().Close();
-        return 1;
+        return 2;
+    }
+    ClientConfig config;
+    ClientConfigLoadReport config_report;
+    std::string config_error;
+    if (!LoadClientConfig(config_path, config_overrides, config,
+                          config_report, config_error)) {
+        LOG_ERROR("Main", "配置加载失败: %s (%s)", config_path.c_str(),
+                  config_error.empty() ? "see config diagnostics"
+                                       : config_error.c_str());
+        Logger::Instance().Close();
+        return 2;
     }
 
     GrpcClient client;
@@ -331,8 +431,9 @@ int main(int argc, char* argv[]) {
                     kActionSchemaId, kActionSchemaVersion,
                     kActionSchemaDigest) ||
         open_response.task_spec().action_rule_id() !=
-            "maze.action.9-way.no-corner-cut.v1") {
-        LOG_ERROR("Main", "OpenSession 返回了无效的 0.11.0 任务身份");
+            "maze.action.9-way.no-corner-cut.v1" ||
+        open_response.task_spec().episode_max_steps() == 0) {
+        LOG_ERROR("Main", "OpenSession 返回了无效的 0.13.0 任务身份");
         Logger::Instance().Close();
         return 1;
     }
@@ -341,8 +442,7 @@ int main(int argc, char* argv[]) {
     const std::string replay_policy =
         ReplayPolicyName(open_response.replay_policy());
     const bool replay_expected =
-        open_response.workload_mode() == maze::WORKLOAD_MODE_INFERENCE_SMOKE ||
-        open_response.workload_mode() == maze::WORKLOAD_MODE_MODEL_EVALUATION;
+        open_response.workload_mode() == maze::WORKLOAD_MODE_EVALUATION;
     if (workload.empty() || replay_policy.empty() ||
         replay_expected !=
             (open_response.replay_policy() ==
@@ -357,15 +457,38 @@ int main(int argc, char* argv[]) {
     cursor.lifecycle_epoch = open_response.lifecycle_epoch();
     maze_client::UpdateCursor(cursor, open_response.lifecycle());
 
-    const char* expected_workload = std::getenv("RL_EXPECTED_WORKLOAD");
-    if (expected_workload != nullptr && expected_workload[0] != '\0' &&
-        workload != expected_workload) {
+    const bool assignment_mismatch =
+        (config.expected.map_id.has_value() &&
+         open_response.task_spec().fixed_map_id() !=
+             *config.expected.map_id) ||
+        (config.expected.map_sha256.has_value() &&
+         open_response.task_spec().expected_map_digest().hex() !=
+             *config.expected.map_sha256) ||
+        (config.expected.agent_count.has_value() &&
+         open_response.task_spec().agent_count() !=
+             static_cast<std::uint32_t>(*config.expected.agent_count));
+    if (assignment_mismatch) {
+        const std::string expected_agent_count =
+            config.expected.agent_count.has_value()
+                ? std::to_string(*config.expected.agent_count)
+                : "<none>";
         LOG_ERROR(
             "Main",
-            "OpenSession workload mismatch: expected=%s actual=%s",
-            expected_workload, workload.c_str());
+            "OpenSession assignment mismatch: workload=%s "
+            "expected_map=%s actual_map=%s "
+            "expected_digest=%s actual_digest=%s expected_agents=%s "
+            "actual_agents=%u",
+            workload.c_str(),
+            config.expected.map_id.has_value()
+                ? config.expected.map_id->c_str() : "<none>",
+            open_response.task_spec().fixed_map_id().c_str(),
+            config.expected.map_sha256.has_value()
+                ? config.expected.map_sha256->c_str() : "<none>",
+            open_response.task_spec().expected_map_digest().hex().c_str(),
+            expected_agent_count.c_str(),
+            open_response.task_spec().agent_count());
         maze::CloseSessionReq close_request;
-        FillCommand(cursor, "close-workload-mismatch",
+        FillCommand(cursor, "close-assignment-mismatch",
                     close_request.mutable_command());
         maze::CloseSessionRsp close_response;
         const bool close_rpc_ok =
@@ -376,7 +499,7 @@ int main(int argc, char* argv[]) {
         if (!close_applied) {
             LOG_ERROR(
                 "Main",
-                "workload mismatch CloseSession 未收敛: seq=%llu "
+                "assignment mismatch CloseSession 未收敛: seq=%llu "
                 "applied=%llu outcome_unknown=%d message=%s",
                 static_cast<unsigned long long>(
                     close_request.command().command_sequence()),
@@ -495,26 +618,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    if (open_response.workload_mode() ==
-        maze::WORKLOAD_MODE_MAP_VALIDATION) {
-        const maze::BehaviorPolicyBinding no_behavior_policy;
-        bool validation_failed =
-            !PublishSessionPolicy(workload, replay_policy,
-                                  no_behavior_policy);
-        maze::CloseSessionReq close_request;
-        FillCommand(cursor, "close-map-validation",
-                    close_request.mutable_command());
-        maze::CloseSessionRsp close_response;
-        if (!client.CloseSession(close_request, close_response) ||
-            !AcceptCommandReply(cursor, close_response.lifecycle())) {
-            LOG_ERROR("Main", "Map validation Session 未正常关闭");
-            validation_failed = true;
-        }
-        client.Disconnect();
-        Logger::Instance().Close();
-        return validation_failed ? 1 : 0;
-    }
-
     bool chain_failed = false;
     bool lifecycle_outcome_unknown = false;
     bool session_policy_published = false;
@@ -524,7 +627,6 @@ int main(int argc, char* argv[]) {
 
     while (!g_stop_requested.load()) {
         cursor.episode_id.clear();
-        cursor.evaluation_id.clear();
         maze::BeginEpisodeReq begin_request;
         FillCommand(cursor, "begin-episode", begin_request.mutable_command());
         maze::BeginEpisodeRsp begin_response;
@@ -581,49 +683,36 @@ int main(int argc, char* argv[]) {
         if (cursor.session_state == maze::SESSION_STATE_EPISODE_ACTIVE &&
             cursor.episode_state == maze::EPISODE_STATE_RUNNING) {
             cursor.episode_id = assignment.episode_id();
-            cursor.evaluation_id = assignment.evaluation().evaluation_id();
             episode_active = !cursor.episode_id.empty();
         }
-        const int multiplier = CurriculumMultiplier(
-            assignment.curriculum_stage());
         const std::string mode = EpisodeModeName(assignment.mode());
         const bool training_assignment =
             assignment.mode() == maze::EPISODE_MODE_TRAINING;
         const bool evaluation_assignment =
-            assignment.mode() == maze::EPISODE_MODE_EVALUATION_ARGMAX ||
-            assignment.mode() == maze::EPISODE_MODE_EVALUATION_STOCHASTIC;
+            assignment.mode() == maze::EPISODE_MODE_EVALUATION;
         if (cursor.session_state != maze::SESSION_STATE_EPISODE_ACTIVE ||
             cursor.episode_state != maze::EPISODE_STATE_RUNNING ||
             assignment.episode_id().empty() ||
             !SameTaskIdentity(assignment.task(), cursor.task) ||
-            multiplier == 0 || mode.empty() ||
+            mode.empty() ||
             assignment.max_steps() !=
-                static_cast<std::uint32_t>(
-                    environment.GetShortestActionSteps() * multiplier) ||
-            !ValidPolicy(assignment.behavior_policy()) ||
+                open_response.task_spec().episode_max_steps() ||
+            !maze_client::PolicyBindingMatchesWorkload(
+                open_response.workload_mode(), assignment.behavior_policy(),
+                kPolicyDistributionSchema) ||
             assignment.collect_training_samples() != training_assignment ||
             (!training_assignment && !evaluation_assignment) ||
             !maze_client::AssignmentMatchesWorkload(
                 open_response.workload_mode(), assignment)) {
-            LOG_ERROR("Main", "EpisodeAssignment 身份、模式或课程无效");
+            LOG_ERROR("Main", "EpisodeAssignment 身份、模式或 horizon 无效");
             lifecycle_outcome_unknown = !episode_active;
             chain_failed = true;
             break;
         }
-        if (evaluation_assignment) {
-            if (assignment.evaluation().evaluation_id().empty() ||
-                assignment.evaluation().training_sample_emission_allowed() ||
-                !SamePolicy(assignment.evaluation().pinned_policy(),
-                            assignment.behavior_policy())) {
-                LOG_ERROR("Main", "Evaluation 未固定模型或错误允许样本发送");
-                chain_failed = true;
-                break;
-            }
-        }
-
         if (!session_policy_published) {
             if (!PublishSessionPolicy(workload, replay_policy,
-                                      assignment.behavior_policy())) {
+                                      assignment.behavior_policy(),
+                                      config.viz)) {
                 LOG_ERROR("Main", "无法发布已协商 Session policy");
                 chain_failed = true;
                 break;
@@ -634,6 +723,8 @@ int main(int argc, char* argv[]) {
         environment.SetMaxSteps(static_cast<int>(assignment.max_steps()));
         environment.Reset();
         std::vector<int> last_actions(config.run.agent_num, 0);
+        std::vector<AgentExecutionCursor> agent_execution(
+            static_cast<std::size_t>(environment.GetAgentNum()));
         if (config.viz.recording_enabled &&
             !recorder.Begin(config.viz.output_dir, episode_number,
                             environment.GetMapId(),
@@ -645,21 +736,21 @@ int main(int argc, char* argv[]) {
         if (training_assignment) {
             LOG_INFO(
                 "Main",
-                "Episode %s 开始 mode=%s max_steps=%u start_model=v%llu "
+                "Episode %s 开始 mode=%s max_steps=%u start_model_step=%llu "
                 "policy_scope=fragment",
                 cursor.episode_id.c_str(), mode.c_str(),
                 assignment.max_steps(),
                 static_cast<unsigned long long>(
-                    assignment.behavior_policy().model_version()));
+                    assignment.behavior_policy().model_step()));
         } else {
             LOG_INFO(
                 "Main",
-                "Episode %s 开始 mode=%s max_steps=%u pinned_model=v%llu "
-                "policy_scope=episode",
+                "Episode %s 开始 mode=%s max_steps=%u pinned_model_sha=%s "
+                "policy_scope=episode digest_only=1",
                 cursor.episode_id.c_str(), mode.c_str(),
                 assignment.max_steps(),
-                static_cast<unsigned long long>(
-                    assignment.behavior_policy().model_version()));
+                assignment.behavior_policy()
+                    .model_artifact_digest().hex().c_str());
         }
 
         while (!g_stop_requested.load()) {
@@ -668,6 +759,9 @@ int main(int argc, char* argv[]) {
             FillCommand(cursor, "update", update_request.mutable_command());
             update_request.set_frame_id(environment.GetFrameId());
             for (int index = 0; index < environment.GetAgentNum(); ++index) {
+                if (agent_execution[static_cast<std::size_t>(index)].retired) {
+                    continue;
+                }
                 const auto& agent = environment.GetAgent(index);
                 auto* state = update_request.add_agents();
                 state->set_agent_id(agent.id);
@@ -679,10 +773,23 @@ int main(int argc, char* argv[]) {
                 state->set_termination_reason(
                     ToProtoTerminationReason(agent.termination_reason));
                 state->set_last_move_blocked(agent.last_move_blocked);
+                if (!AttachExecutedActionReceipt(
+                        update_request.frame_id(),
+                        agent_execution[static_cast<std::size_t>(index)],
+                        state)) {
+                    LOG_ERROR(
+                        "Main",
+                        "无法构造 Agent 动作执行回执: frame=%llu agent_id=%d",
+                        static_cast<unsigned long long>(
+                            update_request.frame_id()),
+                        index);
+                    chain_failed = true;
+                    break;
+                }
             }
+            if (chain_failed) break;
 
             maze::UpdateRsp update_response;
-            bool update_applied = false;
             while (!g_stop_requested.load()) {
                 update_response.Clear();
                 if (!client.Update(update_request, update_response)) {
@@ -702,8 +809,7 @@ int main(int argc, char* argv[]) {
                     if (!maze_client::IsTrainingCapacityWait(
                             update_response, cursor.next_sequence,
                             cursor.task_state, cursor.session_state,
-                            cursor.episode_state,
-                            cursor.evaluation_state)) {
+                            cursor.episode_state)) {
                         LOG_ERROR("Main", "Update WAIT 响应无效");
                         lifecycle_outcome_unknown = true;
                         chain_failed = true;
@@ -713,16 +819,29 @@ int main(int argc, char* argv[]) {
                         update_response.retry_after_ms()));
                     continue;
                 }
-                if (update_response.environment_control() !=
-                        maze::ENVIRONMENT_CONTROL_ADVANCE ||
-                    !AcceptCommandReply(cursor,
-                                        update_response.lifecycle())) {
+                std::vector<AgentExecutionCursor> candidate_execution;
+                bool valid_update = false;
+                if (update_response.environment_control() ==
+                    maze::ENVIRONMENT_CONTROL_ADVANCE) {
+                    if (update_response.task_stop_requested()) {
+                        valid_update = AcceptCommandReply(
+                            cursor, update_response.lifecycle());
+                    } else if (PrepareAppliedAgentUpdate(
+                                   update_request, update_response,
+                                   agent_execution, candidate_execution) &&
+                               AcceptCommandReply(
+                                   cursor, update_response.lifecycle())) {
+                        agent_execution = std::move(candidate_execution);
+                        valid_update = true;
+                    }
+                }
+                if (!valid_update) {
                     const auto& reply = update_response.lifecycle();
                     LOG_ERROR(
                         "Main",
                         "Update 生命周期响应无效: frame=%llu control=%d "
                         "ret=%d result=%d error=%d applied=%llu "
-                        "task=%d session=%d episode=%d evaluation=%d "
+                        "task=%d session=%d episode=%d "
                         "actions=%d message=%s",
                         static_cast<unsigned long long>(
                             update_request.frame_id()),
@@ -735,15 +854,12 @@ int main(int argc, char* argv[]) {
                         static_cast<int>(reply.task_state()),
                         static_cast<int>(reply.session_state()),
                         static_cast<int>(reply.episode_state()),
-                        static_cast<int>(reply.evaluation_state()),
                         update_response.actions_size(),
                         reply.message().c_str());
                     if (!IsConclusiveRejected(cursor, reply)) {
                         lifecycle_outcome_unknown = true;
                     }
                     chain_failed = true;
-                } else {
-                    update_applied = true;
                 }
                 break;
             }
@@ -792,34 +908,67 @@ int main(int argc, char* argv[]) {
                 break;
             }
             if (terminal_report) break;
-            if (update_response.actions_size() != environment.GetAgentNum()) {
-                LOG_ERROR("Main", "AIServer 返回动作数量不匹配");
-                chain_failed = true;
-                break;
-            }
-
-            std::vector<bool> seen(
-                static_cast<std::size_t>(environment.GetAgentNum()), false);
             for (const auto& action : update_response.actions()) {
-                if (action.agent_id() >=
-                        static_cast<std::uint32_t>(environment.GetAgentNum()) ||
-                    action.action_id() < 0 || action.action_id() > 8 ||
-                    seen[action.agent_id()]) {
-                    LOG_ERROR("Main", "AIServer 返回动作身份无效");
-                    chain_failed = true;
-                    break;
-                }
-                seen[action.agent_id()] = true;
                 const int agent_id = static_cast<int>(action.agent_id());
+                const int action_frame_id = environment.GetFrameId();
+                const int result_frame_id = action_frame_id + 1;
                 const auto before = environment.GetAgent(agent_id);
                 environment.Step(agent_id, action.action_id());
                 const auto& after = environment.GetAgent(agent_id);
+                if (!RecordExecutedAction(
+                        agent_execution[static_cast<std::size_t>(agent_id)],
+                        action.action_id())) {
+                    LOG_ERROR(
+                        "Main",
+                        "Agent 动作执行状态无法提交: frame=%d agent_id=%d "
+                        "action_id=%d",
+                        action_frame_id, agent_id, action.action_id());
+                    chain_failed = true;
+                    break;
+                }
                 last_actions[agent_id] = action.action_id();
-                LOG_FILE("Frame", "episode=%s frame=%d agent=%d action=%d(%s) (%d,%d)->(%d,%d)",
-                         cursor.episode_id.c_str(), environment.GetFrameId(),
-                         agent_id, action.action_id(),
-                         kActionNames[action.action_id()], before.grid_x,
-                         before.grid_y, after.grid_x, after.grid_y);
+                LOG_FILE(
+                    "Frame",
+                    "episode=%s action_frame_id=%d result_frame_id=%d "
+                    "agent_id=%d state=%s action_id=%d action=%s "
+                    "from=(%d,%d) to=(%d,%d) blocked=%s terminal=%s",
+                    cursor.episode_id.c_str(), action_frame_id,
+                    result_frame_id, agent_id,
+                    AgentStateName(after.termination_reason),
+                    action.action_id(), kActionNames[action.action_id()],
+                    before.grid_x, before.grid_y, after.grid_x, after.grid_y,
+                    after.last_move_blocked ? "true" : "false",
+                    after.done ? "true" : "false");
+                if (after.done ||
+                    result_frame_id % config.run.log_interval == 0) {
+                    if (after.done) {
+                        LOG_INFO(
+                            "Exec",
+                            "episode=%s action_frame_id=%d "
+                            "result_frame_id=%d agent_id=%d state=%s "
+                            "action_id=%d action=%s from=(%d,%d) "
+                            "to=(%d,%d) blocked=%s terminal=true",
+                            cursor.episode_id.c_str(), action_frame_id,
+                            result_frame_id, agent_id,
+                            AgentStateName(after.termination_reason),
+                            action.action_id(),
+                            kActionNames[action.action_id()], before.grid_x,
+                            before.grid_y, after.grid_x, after.grid_y,
+                            after.last_move_blocked ? "true" : "false");
+                    } else {
+                        LOG_INFO(
+                            "Exec",
+                            "episode=%s action_frame_id=%d "
+                            "result_frame_id=%d agent_id=%d state=active "
+                            "action_id=%d action=%s from=(%d,%d) "
+                            "to=(%d,%d) blocked=%s",
+                            cursor.episode_id.c_str(), action_frame_id,
+                            result_frame_id, agent_id, action.action_id(),
+                            kActionNames[action.action_id()], before.grid_x,
+                            before.grid_y, after.grid_x, after.grid_y,
+                            after.last_move_blocked ? "true" : "false");
+                    }
+                }
             }
             if (chain_failed) break;
             environment.AdvanceFrame();
@@ -828,13 +977,6 @@ int main(int argc, char* argv[]) {
                 recorder.RecordFrame(BuildVizJson(
                     environment, environment.GetFrameId(), episode_number,
                     last_actions));
-            }
-            if (environment.GetFrameId() % config.run.log_interval == 0) {
-                const auto& agent = environment.GetAgent(0);
-                LOG_INFO("Exec", "episode=%s frame=%d action=%d(%s) grid=(%d,%d)",
-                         cursor.episode_id.c_str(), environment.GetFrameId(),
-                         last_actions[0], kActionNames[last_actions[0]],
-                         agent.grid_x, agent.grid_y);
             }
         }
 
@@ -948,9 +1090,9 @@ int main(int argc, char* argv[]) {
         LOG_ERROR(
             "Main",
             "生命周期远端结果未知，禁止改用 Abort/Close: "
-            "pending_seq=%llu episode=%s evaluation=%s",
+            "pending_seq=%llu episode=%s",
             static_cast<unsigned long long>(cursor.next_sequence),
-            cursor.episode_id.c_str(), cursor.evaluation_id.c_str());
+            cursor.episode_id.c_str());
     }
     client.Disconnect();
     Logger::Instance().Close();

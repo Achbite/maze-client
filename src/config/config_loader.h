@@ -1,7 +1,9 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 // ---- 运行参数（main 使用）----
 struct RunConfig {
@@ -42,14 +44,48 @@ struct VizConfig {
     int         server_port = 9004;              // 可视化 HTTP 服务端口，浏览器通过此端口访问回放
 };
 
+struct ExpectedAssignmentConfig {
+    std::optional<std::string> map_id;
+    std::optional<std::string> map_sha256;
+    std::optional<int> agent_count;
+};
+
+struct ClientConfigOverrides {
+    std::optional<std::string> server_host;
+    std::optional<int> server_port;
+    std::optional<std::string> replay_output_dir;
+    std::optional<int> replay_server_port;
+};
+
 // ---- 客户端完整配置 ----
 struct ClientConfig {
     RunConfig     run;
     EnvConfig     env;
     NetworkConfig network;
     VizConfig     viz;
+    ExpectedAssignmentConfig expected;
+};
+
+struct ClientConfigLoadReport {
+    std::string config_path;
+    std::vector<std::string> environment_overridden_fields;
+    std::vector<std::string> cli_overridden_fields;
 };
 
 // ---- 配置加载器 ----
 // 本地配置只拥有实例、网络、地图 registry 与 Replay 参数；任务参数缺失时不得回退。
 bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config);
+bool LoadClientConfig(const std::string& yaml_path,
+                      ClientConfig& out_config,
+                      ClientConfigLoadReport& report,
+                      std::string& error);
+bool LoadClientConfig(const std::string& yaml_path,
+                      const ClientConfigOverrides& overrides,
+                      ClientConfig& out_config,
+                      ClientConfigLoadReport& report,
+                      std::string& error);
+
+// 精确解析 registry 中的 <map_id>.json。registry 和地图文件都必须是
+// 非符号链接，且规范化后的地图文件必须仍是 registry 的直接子文件。
+std::string ResolveTaskMapFile(const std::string& registry_dir,
+                               const std::string& map_id);

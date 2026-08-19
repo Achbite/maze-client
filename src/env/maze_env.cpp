@@ -294,13 +294,9 @@ void MazeEnv::Step(int agent_id, int action_id) {
     if (CheckGoalReached(agent)) {
         agent.done = true;
         agent.termination_reason = AgentTerminationReason::GoalReached;
-        LOG_INFO("MazeEnv", "Agent %d 到达终点! frame=%d grid=(%d,%d)",
-                    agent_id, frame_id_, agent.grid_x, agent.grid_y);
     } else if (CheckTimeout()) {
         agent.done = true;
         agent.termination_reason = AgentTerminationReason::TimeLimit;
-        LOG_INFO("MazeEnv", "Agent %d 超时! frame=%d grid=(%d,%d)",
-                    agent_id, frame_id_ + 1, agent.grid_x, agent.grid_y);
     }
 }
 

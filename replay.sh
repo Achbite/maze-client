@@ -3,18 +3,15 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mode="${1:-local-test}"
+mode="${1:-evaluation}"
 if [ "$#" -gt 0 ]; then
     shift
 fi
 
 case "${mode}" in
-    inference-smoke)
-        mode="local-test"
+    evaluation)
         ;;
-    local-test|model-evaluation)
-        ;;
-    training|train)
+    training)
         echo "Replay is disabled for training" >&2
         exit 2
         ;;
@@ -24,9 +21,11 @@ case "${mode}" in
         ;;
 esac
 
-replay_dir="${RL_VIZ_OUTPUT_DIR:-${repo_dir}/log/viz}"
+: "${RL_VIZ_OUTPUT_DIR:?Replay directory must come from Client effective config}"
+: "${RL_REPLAY_PORT:?Replay port must come from Client effective config}"
+replay_dir="${RL_VIZ_OUTPUT_DIR}"
 replay_host="${RL_REPLAY_HOST:-0.0.0.0}"
-replay_port="${RL_REPLAY_PORT:-9004}"
+replay_port="${RL_REPLAY_PORT}"
 validation_id="${RL_VALIDATION_ID:-local-validation}"
 
 exec python3 -u "${repo_dir}/tools/viz_player/maze_viz_server.py" \

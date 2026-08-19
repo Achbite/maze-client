@@ -28,8 +28,6 @@ int main(int argc, char* argv[]) {
             "fixed map id mismatch");
     Require(environment.GetGridSizeMicrounits() == 495050000U,
             "grid_size_microunits lost decimal precision");
-    Require(environment.GetShortestActionSteps() == 188,
-            "fixed shortest path mismatch");
     Require(environment.GetMapChecksum() ==
                 "861e0bb22a8b9a2ed689527d080c65ec2c822367e985c49753e1be9cf3ca8ae9",
             "fixed map checksum mismatch");

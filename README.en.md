@@ -2,59 +2,76 @@
 
 [简体中文](README.md) | English
 
-Maze Client connects to AIServer and executes Episodes. Start the full chain from [rl-framework](../rl-framework/README.en.md).
+Maze Client connects to AIServer and executes environment Episodes. For the A3
+local chain, developers start Learner, AIServer, and Client separately;
+Framework no longer orchestrates runtime.
 
-## 1. Prepare Contracts and build the image
-
-```bash
-(cd ../rl-contracts && bash build_artifact.sh)
-bash scripts/sync_contract_snapshot.sh
-RL_CLIENT_IMAGE_TAG=training-001 bash build_image.sh
-```
-
-## 2. Incremental build and tests
+## 1. Development container, incremental build, and tests
 
 ```bash
-# Build the development image
-RL_CLIENT_IMAGE_TAG=training-001 make dev-image
+# Host: build or reuse the independent development image and enter it
+make shell
 
-# Incrementally build only the main executable; do not run CTest
+# Inside the container: build and test are explicit, separate entrypoints
+./build.sh
+bash ./test.sh
+
+# The host can also reuse the same container for a build
 make build
-
-# Build test targets and run CTest
-make test
-
-# Focus tests
-TEST_PATTERN=lifecycle make test
-
-# Full build, full CTest, and auxiliary checks
-make verify
 ```
 
-The development container uses persistent ccache. `ninja: no work to do.` does not automatically run tests.
+The development image does not inherit an old runtime image and uses persistent
+ccache. `ninja: no work to do.` does not automatically run tests. Tests may be
+started only from the repository root with `bash ./test.sh`; `build.sh`, Docker
+image builds, and other wrappers do not run them implicitly. Run `make shell`
+only on the host.
 
-## 3. Connect to AIServer manually
+## 2. Connect to AIServer manually
 
 ```bash
 make shell
-bash ./run.sh --aiserver maze-aiserver:9002
+./build.sh
+./run.sh --help
+./run.sh --config configs/client_config.yaml --aiserver maze-aiserver:9002
 ```
+
+`--help` prints the supported overrides and their config fields without
+loading a map, connecting to AIServer, or starting Replay.
 
 Client does not accept a workload argument. The actual mode comes from the AIServer `OpenSession` response.
+The config file provides complete network and Replay defaults. `--aiserver`,
+`--replay-dir`, and `--replay-port` only override existing `network.*` and
+`viz.*` fields. `run.sh` forwards arguments byte-for-byte; the C++ config layer
+publishes the final Replay directory and port back to the supervisor through
+the Session-policy handoff.
+Training assignments require lineage, an explicitly present `model_step`, and
+model/manifest digests. Evaluation assignments carry only the selected model
+file digest and never fabricate a training step or lineage.
 
-## 4. View a local replay
+Client loads the TaskSpec-selected `<map_id>.json` exactly from the config
+default or `RL_ENV_MAP_REGISTRY_DIR`. The expected map/digest/agent variables
+only override config assertions that default to `null`; they never replace the
+runtime values sent by AIServer.
 
-`local-test` and `model-evaluation` use replay port `9004`; Training does not start replay.
+## 3. View a local replay
 
-```bash
-bash ./replay.sh local-test
-```
+`evaluation` uses config's default replay port `9004`; Training does not start
+replay. `run.sh` starts replay only after an evaluation Session policy, and the
+internal `replay.sh` has no independent directory or port fallback. The
+evaluation `validation-manifest.json` records only the model SHA-256, not a
+training step.
 
 Open:
 
 ```text
 http://127.0.0.1:9004/
 ```
+
+## 4. Formal artifacts and image
+
+Only after Level 1/2 pass, user review, and clean savepoints may the host sync
+the formal Contracts artifact and run `bash build_image.sh`. The formal build
+never consumes development artifacts or a development-container build tree.
 
 ## 5. Remove the development container
 

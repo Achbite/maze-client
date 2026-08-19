@@ -2,14 +2,19 @@
 
 set -euo pipefail
 
-CLIENT_IMAGE_TAG="${RL_CLIENT_IMAGE_TAG:-training-001}"
+requested_image_tag="${RL_CLIENT_IMAGE_TAG:-}"
 CLIENT_IMAGE_NAME="rl-training/maze-client"
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-workspace_root="$(cd "${repo_dir}/.." && pwd)"
-context_root="${workspace_root}/.workspace/build-contexts/maze-client"
+workspace_root="${RL_TRAINING_WORKSPACE:-$(cd "${repo_dir}/.." && pwd)}"
+context_root="${workspace_root}/.workspace/build-contexts/maze-client-$$"
 source "${repo_dir}/artifact_versions.env"
 contract_dir="${repo_dir}/proto"
+
+if test -n "$(git -C "${repo_dir}" status --porcelain --untracked-files=all)"; then
+    echo "refusing to build a Client runtime image from a dirty worktree" >&2
+    exit 1
+fi
 
 bash "${repo_dir}/scripts/verify_source_inventory.sh"
 
@@ -37,6 +42,7 @@ if (
     or manifest.get("package") != "rl-contracts"
     or manifest.get("version") != sys.argv[2]
     or manifest.get("platform") != sys.argv[3]
+    or manifest.get("source_tree_state") != "clean"
 ):
     raise SystemExit("Repository-local contract identity is invalid")
 files = {
@@ -57,6 +63,60 @@ for artifact_name, local_name in files.items():
     if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
         raise SystemExit(f"Repository-local contract checksum mismatch: {path}")
 PY
+
+stack_identity_tool="${workspace_root}/rl-framework/tools/compute_stack_source_id.py"
+if [ ! -f "${stack_identity_tool}" ]; then
+    echo "stack source identity tool is missing: ${stack_identity_tool}" >&2
+    exit 1
+fi
+stack_identity_json="$(
+    python3 "${stack_identity_tool}" --workspace-root "${workspace_root}"
+)"
+identity_fields="$(
+    python3 -c '
+import json
+import sys
+
+document = json.loads(sys.argv[1])
+print("\t".join((
+    document["stack_source_id"],
+    document["repositories"]["maze-client"],
+    document["artifacts"]["rl-contracts"]["artifact_digest"],
+    document["artifacts"]["rl-contracts"]["manifest_sha256"],
+    document["configs"]["maze-client"]["sha256"],
+)))
+' "${stack_identity_json}"
+)"
+IFS=$'\t' read -r \
+    stack_source_id component_commit contracts_artifact_digest \
+    contracts_manifest_digest component_config_digest \
+    <<< "${identity_fields}"
+canonical_image_tag="a3-${RL_CONTRACTS_VERSION}-${stack_source_id:0:12}"
+if [ -n "${requested_image_tag}" ] &&
+   [ "${requested_image_tag}" != "${canonical_image_tag}" ]; then
+    echo "Client image tag must match the canonical stack identity:" >&2
+    echo "  expected=${canonical_image_tag}" >&2
+    echo "  requested=${requested_image_tag}" >&2
+    exit 1
+fi
+image_ref="${CLIENT_IMAGE_NAME}:${canonical_image_tag}"
+
+if docker image inspect "${image_ref}" >/dev/null 2>&1; then
+    existing_identity="$(
+        docker image inspect --format \
+            '{{index .Config.Labels "org.rl-training.stack-source-id"}}|{{index .Config.Labels "org.rl-training.component"}}|{{index .Config.Labels "org.rl-training.component-commit"}}|{{index .Config.Labels "org.rl-training.contracts-version"}}|{{index .Config.Labels "org.rl-training.contracts-artifact-digest"}}|{{index .Config.Labels "org.rl-training.contracts-manifest-digest"}}|{{index .Config.Labels "org.rl-training.component-config-digest"}}' \
+            "${image_ref}"
+    )"
+    expected_identity="${stack_source_id}|maze-client|${component_commit}|${RL_CONTRACTS_VERSION}|${contracts_artifact_digest}|${contracts_manifest_digest}|${component_config_digest}"
+    if [ "${existing_identity}" != "${expected_identity}" ]; then
+        echo "refusing to overwrite an existing Client tag with another identity: ${image_ref}" >&2
+        exit 1
+    fi
+    printf '%s\n' "${image_ref}"
+    exit 0
+fi
+
+trap 'rm -rf "${context_root}"' EXIT
 
 python3 - "${repo_dir}" "${context_root}" <<'PY'
 import pathlib
@@ -83,8 +143,20 @@ if not (target / "src/log/logger.h").is_file():
     raise SystemExit("Build context is missing src/log/logger.h")
 PY
 
+mkdir -p "${context_root}/_deps/identity"
+printf '%s\n' "${stack_identity_json}" \
+    > "${context_root}/_deps/identity/stack-source.json"
+
 docker build \
-    --tag "${CLIENT_IMAGE_NAME}:${CLIENT_IMAGE_TAG}" \
+    --label "org.opencontainers.image.revision=${component_commit}" \
+    --label "org.rl-training.component=maze-client" \
+    --label "org.rl-training.component-commit=${component_commit}" \
+    --label "org.rl-training.stack-source-id=${stack_source_id}" \
+    --label "org.rl-training.contracts-version=${RL_CONTRACTS_VERSION}" \
+    --label "org.rl-training.contracts-artifact-digest=${contracts_artifact_digest}" \
+    --label "org.rl-training.contracts-manifest-digest=${contracts_manifest_digest}" \
+    --label "org.rl-training.component-config-digest=${component_config_digest}" \
+    --tag "${image_ref}" \
     "${context_root}"
 
-printf '%s\n' "${CLIENT_IMAGE_NAME}:${CLIENT_IMAGE_TAG}"
+printf '%s\n' "${image_ref}"

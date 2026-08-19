@@ -8,47 +8,26 @@ if [ -x "${repo_dir}/bin/maze_client" ]; then
     default_client_bin="${repo_dir}/bin/maze_client"
 fi
 client_bin="${RL_CLIENT_BIN:-${default_client_bin}}"
-client_config="${RL_CLIENT_CONFIG:-${repo_dir}/configs/client_config.yaml}"
-replay_port="${RL_REPLAY_PORT:-9004}"
-replay_dir="${RL_VIZ_OUTPUT_DIR:-${repo_dir}/log/viz}"
 replay_bin="${RL_REPLAY_BIN:-${repo_dir}/replay.sh}"
 session_policy_path="${RL_SESSION_POLICY_PATH:-/tmp/rl-client-session-policy.$$}"
-
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --config)
-            client_config="${2:?--config requires a value}"
-            shift 2
-            ;;
-        --aiserver)
-            address="${2:?--aiserver requires host:port}"
-            export RL_AISERVER_HOST="${address%:*}"
-            export RL_AISERVER_PORT="${address##*:}"
-            shift 2
-            ;;
-        --replay-dir)
-            replay_dir="${2:?--replay-dir requires a value}"
-            shift 2
-            ;;
-        --replay-port)
-            replay_port="${2:?--replay-port requires a value}"
-            shift 2
-            ;;
-        *)
-            echo "unknown argument: $1" >&2
-            echo "Client workload is negotiated with AIServer through OpenSession" >&2
-            exit 2
-            ;;
-    esac
-done
 
 if [ ! -x "${client_bin}" ]; then
     echo "Client executable is missing: ${client_bin}" >&2
     exit 1
 fi
 
-export RL_VIZ_OUTPUT_DIR="${replay_dir}"
-export RL_REPLAY_PORT="${replay_port}"
+# Help is a meta operation: it must not enter the OpenSession/Replay
+# supervision lifecycle. Business arguments remain byte-for-byte inputs to the
+# C++ config layer below.
+if [ "$#" -eq 1 ]; then
+    case "$1" in
+        --help|-h)
+            cd "${repo_dir}"
+            exec "${client_bin}" "$@"
+            ;;
+    esac
+fi
+
 export RL_SESSION_POLICY_PATH="${session_policy_path}"
 rm -f "${session_policy_path}"
 
@@ -86,9 +65,17 @@ shutdown() {
     replay_pid=""
     rm -f "${session_policy_path}"
 }
-trap shutdown EXIT TERM INT
 
-"${client_bin}" "${client_config}" &
+on_signal() {
+    shutdown
+    exit 0
+}
+
+trap shutdown EXIT
+trap on_signal TERM INT
+
+cd "${repo_dir}"
+"${client_bin}" "$@" &
 client_pid=$!
 
 policy_ready=0
@@ -114,48 +101,46 @@ if [ "${policy_ready}" -ne 1 ]; then
     exit 1
 fi
 
-workload="$(
-    awk -F= '$1 == "workload" { print $2; exit }' \
+policy_value() {
+    awk -v key="$1" \
+        'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' \
         "${session_policy_path}"
-)"
-replay_policy="$(
-    awk -F= '$1 == "replay_policy" { print $2; exit }' \
-        "${session_policy_path}"
-)"
-behavior_policy_scope="$(
-    awk -F= '$1 == "behavior_policy_scope" { print $2; exit }' \
-        "${session_policy_path}"
-)"
-model_version="$(
-    awk -F= '$1 == "model_version" { print $2; exit }' \
-        "${session_policy_path}"
-)"
-model_checksum="$(
-    awk -F= '$1 == "model_artifact_digest" { print $2; exit }' \
-        "${session_policy_path}"
-)"
+}
+
+workload="$(policy_value workload)"
+replay_policy="$(policy_value replay_policy)"
+behavior_policy_scope="$(policy_value behavior_policy_scope)"
+model_step="$(policy_value model_step)"
+model_lineage_id="$(policy_value model_lineage_id)"
+model_checksum="$(policy_value model_artifact_digest)"
+replay_dir="$(policy_value replay_output_dir)"
+replay_port="$(policy_value replay_server_port)"
+if [[ "${replay_dir}" != /* ]] ||
+   [[ ! "${replay_port}" =~ ^[0-9]+$ ]] ||
+   [ "${replay_port}" -le 0 ] || [ "${replay_port}" -gt 65535 ]; then
+    echo "Client effective Replay config handoff is invalid" >&2
+    exit 1
+fi
 case "${workload}:${replay_policy}" in
     training:disabled)
         if [ "${behavior_policy_scope}" != "training-fragment" ]; then
             echo "Training requires fragment-scoped behavior policy" >&2
             exit 1
         fi
-        ;;
-    map-validation:disabled)
-        if [ "${behavior_policy_scope}" != "none" ]; then
-            echo "Map validation must not bind a behavior policy" >&2
+        if [[ ! "${model_step}" =~ ^[0-9]+$ ]] ||
+           [ -z "${model_lineage_id}" ]; then
+            echo "Training requires lineage and an explicit model step" >&2
             exit 1
         fi
         ;;
-    local-test:record-and-serve|\
-    model-evaluation:record-and-serve)
+    evaluation:record-and-serve)
         if [ "${behavior_policy_scope}" != "evaluation-episode" ]; then
             echo "Evaluation requires an episode-scoped behavior policy" >&2
             exit 1
         fi
-        if [[ ! "${model_version}" =~ ^[0-9]+$ ]] ||
+        if [ -n "${model_step}" ] || [ -n "${model_lineage_id}" ] ||
            [[ ! "${model_checksum}" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "Replay requires a valid model identity" >&2
+            echo "Evaluation Replay requires a digest-only model binding" >&2
             exit 1
         fi
         if [ ! -f "${replay_bin}" ]; then
@@ -170,8 +155,8 @@ case "${workload}:${replay_policy}" in
         fi
         validation_manifest="${replay_dir}/validation-manifest.json"
         validation_manifest_temp="${validation_manifest}.tmp.$$"
-        if ! printf '{"schema_version":1,"validation_id":"%s","model":{"version":%s,"sha256":"%s"},"parameters":{"workload":"%s"}}\n' \
-            "${validation_id}" "${model_version}" "${model_checksum}" \
+        if ! printf '{"schema_version":2,"validation_id":"%s","model":{"sha256":"%s"},"parameters":{"workload":"%s"}}\n' \
+            "${validation_id}" "${model_checksum}" \
             "${workload}" > "${validation_manifest_temp}"; then
             rm -f "${validation_manifest_temp}"
             exit 1
@@ -180,7 +165,9 @@ case "${workload}:${replay_policy}" in
             rm -f "${validation_manifest_temp}"
             exit 1
         fi
-        bash "${replay_bin}" "${workload}" &
+        RL_VIZ_OUTPUT_DIR="${replay_dir}" \
+        RL_REPLAY_PORT="${replay_port}" \
+            bash "${replay_bin}" "${workload}" &
         replay_pid=$!
 
         replay_ready=0

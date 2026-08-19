@@ -13,8 +13,7 @@ inline bool IsTrainingCapacityWait(
     std::uint64_t pending_sequence,
     task::TaskState task_state,
     task::SessionState session_state,
-    task::EpisodeState episode_state,
-    task::EvaluationState evaluation_state) {
+    task::EpisodeState episode_state) {
     const auto& reply = response.lifecycle();
     return reply.ret_code() == 0 &&
            reply.result() == task::LIFECYCLE_RESULT_WAIT &&
@@ -27,8 +26,7 @@ inline bool IsTrainingCapacityWait(
            reply.applied_sequence() == pending_sequence - 1 &&
            reply.task_state() == task_state &&
            reply.session_state() == session_state &&
-           reply.episode_state() == episode_state &&
-           reply.evaluation_state() == evaluation_state;
+           reply.episode_state() == episode_state;
 }
 
 }  // namespace maze_client

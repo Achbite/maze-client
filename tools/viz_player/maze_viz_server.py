@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve local-test and model-evaluation replays."""
+"""Serve deterministic evaluation replays."""
 
 import argparse
 import glob
@@ -447,8 +447,8 @@ def main():
                         help='本地模型验证任务 ID')
     parser.add_argument(
         '--mode',
-        choices=('local-test', 'model-evaluation'),
-        default='model-evaluation',
+        choices=('evaluation',),
+        default='evaluation',
     )
     parser.add_argument('--web-dir', default=DEFAULT_WEB_DIR,
                         help='本地验证页面静态文件目录')

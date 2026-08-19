@@ -1,12 +1,17 @@
 #include "config/config_loader.h"
 #include "log/logger.h"
 
-#include <fstream>
-#include <sstream>
 #include <algorithm>
-#include <vector>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <vector>
+
+extern char** environ;
 
 // ---- 去除字符串首尾空白 ----
 static std::string Trim(const std::string& s) {
@@ -39,9 +44,90 @@ static int SafeInt(const std::string& val, int def) {
     }
 }
 
-static std::string GetEnvValue(const char* name) {
-    const char* value = std::getenv(name);
-    return value ? std::string(value) : "";
+static bool IsLowerSha256(const std::string& value) {
+    if (value.size() != 64) return false;
+    return std::all_of(value.begin(), value.end(), [](char character) {
+        return (character >= '0' && character <= '9') ||
+               (character >= 'a' && character <= 'f');
+    });
+}
+
+static bool HasPrefix(const std::string& value, const char* prefix) {
+    return value.rfind(prefix, 0) == 0;
+}
+
+static bool ValidateComponentEnvironment(std::string& error) {
+    static const std::set<std::string> allowed = {
+        "RL_CLIENT_BIN",
+        "RL_ENV_MAP_REGISTRY_DIR",
+        "RL_EXPECTED_AGENT_COUNT",
+        "RL_EXPECTED_TASK_MAP_ID",
+        "RL_EXPECTED_TASK_MAP_SHA256",
+        "RL_REPLAY_BIN",
+        "RL_SESSION_POLICY_PATH",
+        "RL_VALIDATION_ID",
+        "RL_VALIDATION_RESULT_PATH",
+    };
+    static const std::set<std::string> retired = {
+        "RL_AISERVER_HOST",
+        "RL_AISERVER_PORT",
+        "RL_CLIENT_INSTANCE_ID",
+        "RL_ENVIRONMENT_INSTANCE_ID",
+        "RL_EXPECTED_WORKLOAD",
+        "RL_REPLAY_PORT",
+        "RL_VIZ_INTERVAL",
+        "RL_VIZ_OUTPUT_DIR",
+    };
+    for (char** item = environ; item && *item; ++item) {
+        const std::string entry(*item);
+        const auto separator = entry.find('=');
+        const std::string name = entry.substr(0, separator);
+        if (allowed.count(name) != 0) continue;
+        if (retired.count(name) != 0 ||
+            HasPrefix(name, "RL_AISERVER_") ||
+            HasPrefix(name, "RL_TASK_") || HasPrefix(name, "RL_PPO_") ||
+            HasPrefix(name, "RL_EXPECTED_") || HasPrefix(name, "RL_ENV_") ||
+            name == "RL_RUN_ID" || name == "RL_POD_ATTEMPT_ID") {
+            error = "unknown component configuration environment: " + name;
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ReadEnvironment(const char* name,
+                            std::optional<std::string>& value,
+                            std::string& error) {
+    const char* raw = std::getenv(name);
+    if (!raw) return true;
+    if (*raw == '\0') {
+        error = std::string(name) + " must not be empty";
+        return false;
+    }
+    const std::string candidate(raw);
+    if (candidate != Trim(candidate)) {
+        error = std::string(name) +
+                " must not contain surrounding whitespace";
+        return false;
+    }
+    value = candidate;
+    return true;
+}
+
+static bool ReadEnvironmentInt(const char* name,
+                               std::optional<int>& value,
+                               std::string& error) {
+    std::optional<std::string> raw;
+    if (!ReadEnvironment(name, raw, error) || !raw.has_value()) {
+        return error.empty();
+    }
+    const int parsed = SafeInt(*raw, std::numeric_limits<int>::min());
+    if (parsed == std::numeric_limits<int>::min()) {
+        error = std::string(name) + " must be an integer";
+        return false;
+    }
+    value = parsed;
+    return true;
 }
 
 // ---- YAML 键值对 ----
@@ -116,11 +202,47 @@ static std::string FindValue(const std::vector<YamlEntry>& entries,
     return "";
 }
 
-// ---- 从 YAML 文件加载配置 ----
-bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config) {
-    std::ifstream ifs(yaml_path);
+// ---- 从 YAML 文件加载配置并应用白名单环境覆盖 ----
+bool LoadClientConfig(const std::string& yaml_path,
+                      const ClientConfigOverrides& overrides,
+                      ClientConfig& out_config,
+                      ClientConfigLoadReport& report,
+                      std::string& error) {
+    namespace fs = std::filesystem;
+    out_config = ClientConfig{};
+    report = ClientConfigLoadReport{};
+    error.clear();
+    if (!ValidateComponentEnvironment(error)) {
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+
+    std::error_code fs_error;
+    fs::path config_path = fs::absolute(fs::path(yaml_path), fs_error);
+    if (fs_error) {
+        error = "cannot resolve config path: " + yaml_path;
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    const auto configured_status = fs::symlink_status(config_path, fs_error);
+    if (fs_error || fs::is_symlink(configured_status) ||
+        !fs::is_regular_file(configured_status)) {
+        error = "config must be a regular, non-symlink file";
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    config_path = fs::weakly_canonical(config_path, fs_error);
+    if (fs_error) {
+        error = "cannot canonicalize config path: " + yaml_path;
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    report.config_path = config_path.string();
+
+    std::ifstream ifs(config_path);
     if (!ifs.is_open()) {
-        LOG_ERROR("Config", "无法打开配置文件: %s", yaml_path.c_str());
+        error = "cannot open config file: " + config_path.string();
+        LOG_ERROR("Config", "%s", error.c_str());
         return false;
     }
 
@@ -130,10 +252,54 @@ bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config) {
     std::string content = ss.str();
     ifs.close();
 
-    LOG_INFO("Config", "加载配置文件: %s", yaml_path.c_str());
+    LOG_INFO("Config", "加载配置文件: %s", config_path.c_str());
 
     // 解析 YAML
     std::vector<YamlEntry> entries = ParseYaml(content);
+    static const std::set<std::string> allowed_config_fields = {
+        "run.client_instance_id",
+        "run.environment_instance_id",
+        "run.log_interval",
+        "env.map_registry_dir",
+        "network.server_host",
+        "network.server_port",
+        "viz.output_dir",
+        "viz.interval",
+        "viz.server_port",
+        "expected.map_id",
+        "expected.map_sha256",
+        "expected.agent_count",
+    };
+    for (const auto& entry : entries) {
+        const std::string field = entry.section + "." + entry.key;
+        if (allowed_config_fields.count(field) == 0) {
+            error = "unknown Client config field: " + field;
+            LOG_ERROR("Config", "%s", error.c_str());
+            return false;
+        }
+    }
+    const std::pair<const char*, const char*> required[] = {
+        {"run", "client_instance_id"},
+        {"run", "environment_instance_id"},
+        {"run", "log_interval"},
+        {"env", "map_registry_dir"},
+        {"network", "server_host"},
+        {"network", "server_port"},
+        {"viz", "output_dir"},
+        {"viz", "interval"},
+        {"viz", "server_port"},
+        {"expected", "map_id"},
+        {"expected", "map_sha256"},
+        {"expected", "agent_count"},
+    };
+    for (const auto& field : required) {
+        if (FindValue(entries, field.first, field.second).empty()) {
+            error = std::string("missing Client config field: ") +
+                    field.first + "." + field.second;
+            LOG_ERROR("Config", "%s", error.c_str());
+            return false;
+        }
+    }
 
     // --- run ---
     out_config.run.log_interval = SafeInt(FindValue(entries, "run", "log_interval"), 100);
@@ -151,7 +317,8 @@ bool LoadClientConfig(const std::string& yaml_path, ClientConfig& out_config) {
     if (!host.empty()) {
         out_config.network.server_host = host;
     }
-out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_port"), 9002);
+    out_config.network.server_port =
+        SafeInt(FindValue(entries, "network", "server_port"), 9002);
 
     // --- viz ---
     std::string viz_output_dir = FindValue(entries, "viz", "output_dir");
@@ -161,36 +328,170 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
     out_config.viz.interval    = SafeInt(FindValue(entries, "viz", "interval"), 1);
     out_config.viz.server_port = SafeInt(FindValue(entries, "viz", "server_port"), 9004);
 
-    std::string env_host = GetEnvValue("RL_AISERVER_HOST");
-    if (!env_host.empty()) {
-        out_config.network.server_host = env_host;
+    const std::string configured_map_id =
+        FindValue(entries, "expected", "map_id");
+    if (configured_map_id != "null") {
+        out_config.expected.map_id = configured_map_id;
     }
-    std::string env_port = GetEnvValue("RL_AISERVER_PORT");
-    if (!env_port.empty()) {
-        out_config.network.server_port = SafeInt(env_port, out_config.network.server_port);
+    const std::string configured_map_sha256 =
+        FindValue(entries, "expected", "map_sha256");
+    if (configured_map_sha256 != "null") {
+        out_config.expected.map_sha256 = configured_map_sha256;
     }
-    std::string env_client_id = GetEnvValue("RL_CLIENT_INSTANCE_ID");
-    if (!env_client_id.empty()) {
-        out_config.run.client_instance_id = env_client_id;
+    const std::string configured_agent_count =
+        FindValue(entries, "expected", "agent_count");
+    if (configured_agent_count != "null") {
+        out_config.expected.agent_count =
+            SafeInt(configured_agent_count, std::numeric_limits<int>::min());
     }
-    std::string env_env_id = GetEnvValue("RL_ENVIRONMENT_INSTANCE_ID");
-    if (!env_env_id.empty()) {
-        out_config.run.environment_instance_id = env_env_id;
+
+    const auto record_override = [&](const char* field) {
+        report.environment_overridden_fields.emplace_back(field);
+    };
+    const auto apply_string = [&](const char* name,
+                                  std::string& target,
+                                  const char* field) {
+        std::optional<std::string> value;
+        if (!ReadEnvironment(name, value, error)) return false;
+        if (value.has_value()) {
+            target = *value;
+            record_override(field);
+        }
+        return true;
+    };
+    if (!apply_string("RL_ENV_MAP_REGISTRY_DIR",
+                      out_config.env.map_registry_dir,
+                      "env.map_registry_dir")) {
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
     }
-    std::string env_viz_output_dir = GetEnvValue("RL_VIZ_OUTPUT_DIR");
-    if (!env_viz_output_dir.empty()) {
-        out_config.viz.output_dir = env_viz_output_dir;
+
+    std::optional<std::string> expected_string;
+    if (!ReadEnvironment("RL_EXPECTED_TASK_MAP_ID", expected_string, error)) {
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
     }
-    std::string env_viz_interval = GetEnvValue("RL_VIZ_INTERVAL");
-    if (!env_viz_interval.empty()) {
-        out_config.viz.interval = SafeInt(
-            env_viz_interval, out_config.viz.interval);
+    if (expected_string.has_value()) {
+        out_config.expected.map_id = *expected_string;
+        record_override("expected.map_id");
     }
-    std::string env_replay_port = GetEnvValue("RL_REPLAY_PORT");
-    if (!env_replay_port.empty()) {
-        out_config.viz.server_port = SafeInt(
-            env_replay_port, out_config.viz.server_port);
+    expected_string.reset();
+    if (!ReadEnvironment("RL_EXPECTED_TASK_MAP_SHA256", expected_string,
+                         error)) {
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
     }
+    if (expected_string.has_value()) {
+        out_config.expected.map_sha256 = *expected_string;
+        record_override("expected.map_sha256");
+    }
+    std::optional<int> expected_agents;
+    if (!ReadEnvironmentInt("RL_EXPECTED_AGENT_COUNT", expected_agents,
+                            error)) {
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    if (expected_agents.has_value()) {
+        out_config.expected.agent_count = *expected_agents;
+        record_override("expected.agent_count");
+    }
+    if (overrides.server_host.has_value() !=
+        overrides.server_port.has_value()) {
+        error = "--aiserver requires one complete host:port override";
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    if ((overrides.server_host.has_value() &&
+         (overrides.server_host->empty() ||
+          *overrides.server_port <= 0 || *overrides.server_port > 65535)) ||
+        (overrides.replay_output_dir.has_value() &&
+         overrides.replay_output_dir->empty()) ||
+        (overrides.replay_server_port.has_value() &&
+         (*overrides.replay_server_port <= 0 ||
+          *overrides.replay_server_port > 65535))) {
+        error = "Client CLI override is invalid";
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    const auto record_cli_override = [&](const char* field) {
+        report.cli_overridden_fields.emplace_back(field);
+    };
+    if (overrides.server_host.has_value()) {
+        out_config.network.server_host = *overrides.server_host;
+        out_config.network.server_port = *overrides.server_port;
+        record_cli_override("network.server_host");
+        record_cli_override("network.server_port");
+    }
+    if (overrides.replay_output_dir.has_value()) {
+        out_config.viz.output_dir = *overrides.replay_output_dir;
+        record_cli_override("viz.output_dir");
+    }
+    if (overrides.replay_server_port.has_value()) {
+        out_config.viz.server_port = *overrides.replay_server_port;
+        record_cli_override("viz.server_port");
+    }
+
+    fs::path registry_path(out_config.env.map_registry_dir);
+    if (registry_path.is_relative()) {
+        registry_path = config_path.parent_path() / registry_path;
+    }
+    const auto registry_status = fs::symlink_status(registry_path, fs_error);
+    if (fs_error || fs::is_symlink(registry_status) ||
+        !fs::is_directory(registry_status)) {
+        error = "map registry must be a regular, non-symlink directory: " +
+                registry_path.string();
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    registry_path = fs::weakly_canonical(registry_path, fs_error);
+    if (fs_error) {
+        error = "cannot canonicalize map registry";
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    out_config.env.map_registry_dir = registry_path.string();
+
+    fs::path replay_path(out_config.viz.output_dir);
+    if (replay_path.is_relative()) {
+        replay_path = config_path.parent_path() / replay_path;
+    }
+    replay_path = fs::absolute(replay_path, fs_error).lexically_normal();
+    if (fs_error) {
+        error = "cannot resolve Replay output directory";
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    const bool replay_exists = fs::exists(replay_path, fs_error);
+    if (fs_error) {
+        error = "cannot inspect Replay output directory";
+        LOG_ERROR("Config", "%s", error.c_str());
+        return false;
+    }
+    if (replay_exists) {
+        const auto replay_status = fs::symlink_status(replay_path, fs_error);
+        if (fs_error || fs::is_symlink(replay_status) ||
+            !fs::is_directory(replay_status)) {
+            error = "Replay output must be a directory or an absent path: " +
+                    replay_path.string();
+            LOG_ERROR("Config", "%s", error.c_str());
+            return false;
+        }
+        replay_path = fs::weakly_canonical(replay_path, fs_error);
+        if (fs_error) {
+            error = "cannot canonicalize Replay output directory";
+            LOG_ERROR("Config", "%s", error.c_str());
+            return false;
+        }
+    }
+    out_config.viz.output_dir = replay_path.string();
+    static const std::regex map_id_pattern("[A-Za-z0-9_-]+");
+    const bool expected_valid =
+        (!out_config.expected.map_id.has_value() ||
+         std::regex_match(*out_config.expected.map_id, map_id_pattern)) &&
+        (!out_config.expected.map_sha256.has_value() ||
+         IsLowerSha256(*out_config.expected.map_sha256)) &&
+        (!out_config.expected.agent_count.has_value() ||
+         *out_config.expected.agent_count > 0);
     if (out_config.run.client_instance_id.empty() ||
         out_config.run.environment_instance_id.empty() ||
         out_config.env.map_registry_dir.empty() ||
@@ -200,9 +501,35 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
         out_config.run.log_interval <= 0 ||
         out_config.viz.interval <= 0 ||
         out_config.viz.server_port <= 0 ||
-        out_config.viz.server_port > 65535) {
-        LOG_ERROR("Config", "本地实例、registry、网络或记录配置无效");
+        out_config.viz.server_port > 65535 || !expected_valid) {
+        error = "local instance, registry, network, recording or expected "
+                "assignment config is invalid";
+        LOG_ERROR("Config", "%s", error.c_str());
         return false;
+    }
+    LOG_INFO("Config", "config source: %s", report.config_path.c_str());
+    if (report.environment_overridden_fields.empty()) {
+        LOG_INFO("Config", "environment overrides: none");
+    } else {
+        std::ostringstream fields;
+        for (std::size_t index = 0;
+             index < report.environment_overridden_fields.size(); ++index) {
+            if (index > 0) fields << ',';
+            fields << report.environment_overridden_fields[index];
+        }
+        LOG_INFO("Config", "environment overrides: %s",
+                 fields.str().c_str());
+    }
+    if (report.cli_overridden_fields.empty()) {
+        LOG_INFO("Config", "CLI overrides: none");
+    } else {
+        std::ostringstream fields;
+        for (std::size_t index = 0;
+             index < report.cli_overridden_fields.size(); ++index) {
+            if (index > 0) fields << ',';
+            fields << report.cli_overridden_fields[index];
+        }
+        LOG_INFO("Config", "CLI overrides: %s", fields.str().c_str());
     }
     LOG_INFO("Config", "run: client_instance_id=%s, environment_instance_id=%s, log_interval=%d",
              out_config.run.client_instance_id.c_str(),
@@ -215,5 +542,61 @@ out_config.network.server_port = SafeInt(FindValue(entries, "network", "server_p
     LOG_INFO("Config", "viz: output_dir=%s, interval=%d, server_port=%d",
              out_config.viz.output_dir.c_str(), out_config.viz.interval,
              out_config.viz.server_port);
+    const std::string expected_agent_count =
+        out_config.expected.agent_count.has_value()
+            ? std::to_string(*out_config.expected.agent_count)
+            : "<none>";
+    LOG_INFO(
+        "Config",
+        "expected assignment: map=%s digest=%s agents=%s",
+        out_config.expected.map_id.has_value()
+            ? out_config.expected.map_id->c_str() : "<none>",
+        out_config.expected.map_sha256.has_value()
+            ? out_config.expected.map_sha256->c_str() : "<none>",
+        expected_agent_count.c_str());
+    error.clear();
     return true;
+}
+
+bool LoadClientConfig(const std::string& yaml_path,
+                      ClientConfig& out_config,
+                      ClientConfigLoadReport& report,
+                      std::string& error) {
+    return LoadClientConfig(
+        yaml_path, ClientConfigOverrides{}, out_config, report, error);
+}
+
+bool LoadClientConfig(const std::string& yaml_path,
+                      ClientConfig& out_config) {
+    ClientConfigLoadReport report;
+    std::string error;
+    return LoadClientConfig(yaml_path, out_config, report, error);
+}
+
+std::string ResolveTaskMapFile(const std::string& registry_dir,
+                               const std::string& map_id) {
+    namespace fs = std::filesystem;
+    if (registry_dir.empty() || map_id.empty()) return "";
+    static const std::regex map_id_pattern("[A-Za-z0-9_-]+");
+    if (!std::regex_match(map_id, map_id_pattern)) return "";
+
+    std::error_code error;
+    const fs::path configured_root(registry_dir);
+    const auto root_status = fs::symlink_status(configured_root, error);
+    if (error || fs::is_symlink(root_status) ||
+        !fs::is_directory(root_status)) {
+        return "";
+    }
+    const fs::path root = fs::weakly_canonical(configured_root, error);
+    if (error) return "";
+
+    const fs::path raw_candidate = root / (map_id + ".json");
+    const auto candidate_status = fs::symlink_status(raw_candidate, error);
+    if (error || fs::is_symlink(candidate_status) ||
+        !fs::is_regular_file(candidate_status)) {
+        return "";
+    }
+    const fs::path candidate = fs::weakly_canonical(raw_candidate, error);
+    if (error || candidate.parent_path() != root) return "";
+    return candidate.string();
 }
