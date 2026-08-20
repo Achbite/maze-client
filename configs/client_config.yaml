@@ -1,5 +1,6 @@
 # Maze Client 只配置环境执行实例与通信入口。
-# Agent 数、地图、Episode 时限、课程和 workload 全部由 AIServer TaskSpec 分配。
+# Agent 数由 AIServer EnvironmentRuntimeSpec 分配；地图、Episode 时限和 workload
+# 由 AIServer session/task policy 分配。Client 不形成第二权威入口。
 
 run:
   client_instance_id: "maze-client-0"       # Client 进程实例身份；同一生命周期内稳定
@@ -23,4 +24,3 @@ viz:
 expected:
   map_id: null
   map_sha256: null
-  agent_count: null

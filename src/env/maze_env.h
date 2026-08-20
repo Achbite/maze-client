@@ -60,7 +60,7 @@ public:
     void SetMaxSteps(int max_steps);
 
     // 帧更新
-    void Step(int agent_id, int action_id);               // 执行网格级移动，检查可达性
+    bool Step(int agent_id, int action_id, std::string& error);  // 执行网格级移动，非法输入不修改状态
     void AdvanceFrame();                                  // 帧号递增（所有 Agent Step 完后调用）
 
     // 查询

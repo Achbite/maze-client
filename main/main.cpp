@@ -8,6 +8,7 @@
 #include "viz/viz_recorder.h"
 #include "log/logger.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -170,6 +171,83 @@ const char* AgentStateName(AgentTerminationReason reason) {
     }
 }
 
+const char* OutcomeStateName(maze::MazeTerminationReason reason) {
+    switch (reason) {
+        case maze::MAZE_TERMINATION_REASON_GOAL_REACHED:
+            return "goal_reached";
+        case maze::MAZE_TERMINATION_REASON_TIME_LIMIT:
+            return "time_limit";
+        case maze::MAZE_TERMINATION_REASON_CLIENT_ABORT:
+            return "client_abort";
+        case maze::MAZE_TERMINATION_REASON_TASK_STOP:
+            return "task_stop";
+        case maze::MAZE_TERMINATION_REASON_CHAIN_FAILURE:
+            return "chain_failure";
+        case maze::MAZE_TERMINATION_REASON_ACTIVE:
+            return "active";
+        case maze::MAZE_TERMINATION_REASON_UNSPECIFIED:
+        default:
+            return "unspecified";
+    }
+}
+
+bool RenderEpisodeOutcome(const maze::EndEpisodeRsp& response,
+                          const std::string& episode_id,
+                          int expected_agent_count,
+                          std::string& rendered,
+                          std::string& error) {
+    error.clear();
+    if (!response.has_outcome() ||
+        response.outcome().episode_id() != episode_id ||
+        response.outcome().agents_size() != expected_agent_count) {
+        error = "EndEpisode outcome identity or Agent count is invalid";
+        return false;
+    }
+
+    std::unordered_set<std::uint32_t> seen;
+    std::vector<const maze::AgentEpisodeOutcome*> agents;
+    agents.reserve(static_cast<std::size_t>(expected_agent_count));
+    for (const auto& agent : response.outcome().agents()) {
+        const bool goal = agent.termination_reason() ==
+                          maze::MAZE_TERMINATION_REASON_GOAL_REACHED;
+        if (agent.agent_id() >=
+                static_cast<std::uint32_t>(expected_agent_count) ||
+            !seen.insert(agent.agent_id()).second ||
+            !agent.has_final_position() ||
+            agent.termination_reason() ==
+                maze::MAZE_TERMINATION_REASON_UNSPECIFIED ||
+            agent.termination_reason() ==
+                maze::MAZE_TERMINATION_REASON_ACTIVE ||
+            goal != agent.has_goal_rank_group()) {
+            error = "EndEpisode outcome contains an invalid Agent result";
+            return false;
+        }
+        agents.push_back(&agent);
+    }
+    std::sort(agents.begin(), agents.end(), [](const auto* left,
+                                                const auto* right) {
+        return left->agent_id() < right->agent_id();
+    });
+
+    std::ostringstream output;
+    output << "episode=" << episode_id << " agents=[";
+    for (std::size_t index = 0; index < agents.size(); ++index) {
+        if (index != 0) output << " | ";
+        const auto& agent = *agents[index];
+        output << "agent_id=" << agent.agent_id()
+               << " state=" << OutcomeStateName(agent.termination_reason())
+               << " terminal_frame_id=" << agent.terminal_frame_id()
+               << " final=(" << agent.final_position().x() << ','
+               << agent.final_position().y() << ')';
+        if (agent.has_goal_rank_group()) {
+            output << " goal_rank_group=" << agent.goal_rank_group();
+        }
+    }
+    output << ']';
+    rendered = output.str();
+    return true;
+}
+
 bool PublishSessionPolicy(const std::string& workload,
                           const std::string& replay_policy,
                           const maze::BehaviorPolicyBinding& policy,
@@ -189,7 +267,7 @@ bool PublishSessionPolicy(const std::string& workload,
     const char* behavior_policy_scope = "none";
     const char* model_identity_role = "not-applicable";
     if (workload == "training") {
-        behavior_policy_scope = "training-fragment";
+        behavior_policy_scope = "training-agent-segment";
         model_identity_role = "episode-start-snapshot";
     } else if (workload == "evaluation") {
         behavior_policy_scope = "evaluation-episode";
@@ -419,7 +497,8 @@ int main(int argc, char* argv[]) {
         open_response.aiserver().component() != "rl-aiserver" ||
         open_response.aiserver().instance_id().empty() ||
         !ValidTaskIdentity(open_response.task_spec().identity()) ||
-        open_response.task_spec().agent_count() == 0 ||
+        !open_response.has_environment_runtime() ||
+        open_response.environment_runtime().agent_count() == 0 ||
         open_response.task_spec().fixed_map_id() !=
             open_response.task_spec().identity().fixed_map_id() ||
         open_response.task_spec().expected_map_digest().SerializeAsString() !=
@@ -433,7 +512,7 @@ int main(int argc, char* argv[]) {
         open_response.task_spec().action_rule_id() !=
             "maze.action.9-way.no-corner-cut.v1" ||
         open_response.task_spec().episode_max_steps() == 0) {
-        LOG_ERROR("Main", "OpenSession 返回了无效的 0.13.0 任务身份");
+        LOG_ERROR("Main", "OpenSession 返回了无效的 0.14.0 任务或 Environment 身份");
         Logger::Instance().Close();
         return 1;
     }
@@ -463,30 +542,20 @@ int main(int argc, char* argv[]) {
              *config.expected.map_id) ||
         (config.expected.map_sha256.has_value() &&
          open_response.task_spec().expected_map_digest().hex() !=
-             *config.expected.map_sha256) ||
-        (config.expected.agent_count.has_value() &&
-         open_response.task_spec().agent_count() !=
-             static_cast<std::uint32_t>(*config.expected.agent_count));
+             *config.expected.map_sha256);
     if (assignment_mismatch) {
-        const std::string expected_agent_count =
-            config.expected.agent_count.has_value()
-                ? std::to_string(*config.expected.agent_count)
-                : "<none>";
         LOG_ERROR(
             "Main",
             "OpenSession assignment mismatch: workload=%s "
             "expected_map=%s actual_map=%s "
-            "expected_digest=%s actual_digest=%s expected_agents=%s "
-            "actual_agents=%u",
+            "expected_digest=%s actual_digest=%s",
             workload.c_str(),
             config.expected.map_id.has_value()
                 ? config.expected.map_id->c_str() : "<none>",
             open_response.task_spec().fixed_map_id().c_str(),
             config.expected.map_sha256.has_value()
                 ? config.expected.map_sha256->c_str() : "<none>",
-            open_response.task_spec().expected_map_digest().hex().c_str(),
-            expected_agent_count.c_str(),
-            open_response.task_spec().agent_count());
+            open_response.task_spec().expected_map_digest().hex().c_str());
         maze::CloseSessionReq close_request;
         FillCommand(cursor, "close-assignment-mismatch",
                     close_request.mutable_command());
@@ -518,7 +587,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     config.run.agent_num =
-        static_cast<int>(open_response.task_spec().agent_count());
+        static_cast<int>(open_response.environment_runtime().agent_count());
     config.run.workload = workload;
     config.viz.recording_enabled = replay_expected;
 
@@ -737,7 +806,7 @@ int main(int argc, char* argv[]) {
             LOG_INFO(
                 "Main",
                 "Episode %s 开始 mode=%s max_steps=%u start_model_step=%llu "
-                "policy_scope=fragment",
+                "policy_scope=agent-segment",
                 cursor.episode_id.c_str(), mode.c_str(),
                 assignment.max_steps(),
                 static_cast<unsigned long long>(
@@ -908,12 +977,27 @@ int main(int argc, char* argv[]) {
                 break;
             }
             if (terminal_report) break;
+            const int action_frame_id = environment.GetFrameId();
+            const int result_frame_id = action_frame_id + 1;
+            const bool grouped_console_frame =
+                result_frame_id % config.run.log_interval == 0;
+            std::ostringstream grouped_actions;
+            bool first_grouped_action = true;
             for (const auto& action : update_response.actions()) {
                 const int agent_id = static_cast<int>(action.agent_id());
-                const int action_frame_id = environment.GetFrameId();
-                const int result_frame_id = action_frame_id + 1;
                 const auto before = environment.GetAgent(agent_id);
-                environment.Step(agent_id, action.action_id());
+                std::string step_error;
+                if (!environment.Step(agent_id, action.action_id(),
+                                      step_error)) {
+                    LOG_ERROR(
+                        "Main",
+                        "MazeEnv Step 拒绝动作: episode=%s frame=%d "
+                        "agent_id=%d action_id=%d error=%s",
+                        cursor.episode_id.c_str(), action_frame_id,
+                        agent_id, action.action_id(), step_error.c_str());
+                    chain_failed = true;
+                    break;
+                }
                 const auto& after = environment.GetAgent(agent_id);
                 if (!RecordExecutedAction(
                         agent_execution[static_cast<std::size_t>(agent_id)],
@@ -939,38 +1023,42 @@ int main(int argc, char* argv[]) {
                     before.grid_x, before.grid_y, after.grid_x, after.grid_y,
                     after.last_move_blocked ? "true" : "false",
                     after.done ? "true" : "false");
-                if (after.done ||
-                    result_frame_id % config.run.log_interval == 0) {
-                    if (after.done) {
-                        LOG_INFO(
-                            "Exec",
-                            "episode=%s action_frame_id=%d "
-                            "result_frame_id=%d agent_id=%d state=%s "
-                            "action_id=%d action=%s from=(%d,%d) "
-                            "to=(%d,%d) blocked=%s terminal=true",
-                            cursor.episode_id.c_str(), action_frame_id,
-                            result_frame_id, agent_id,
-                            AgentStateName(after.termination_reason),
-                            action.action_id(),
-                            kActionNames[action.action_id()], before.grid_x,
-                            before.grid_y, after.grid_x, after.grid_y,
-                            after.last_move_blocked ? "true" : "false");
-                    } else {
-                        LOG_INFO(
-                            "Exec",
-                            "episode=%s action_frame_id=%d "
-                            "result_frame_id=%d agent_id=%d state=active "
-                            "action_id=%d action=%s from=(%d,%d) "
-                            "to=(%d,%d) blocked=%s",
-                            cursor.episode_id.c_str(), action_frame_id,
-                            result_frame_id, agent_id, action.action_id(),
-                            kActionNames[action.action_id()], before.grid_x,
-                            before.grid_y, after.grid_x, after.grid_y,
-                            after.last_move_blocked ? "true" : "false");
-                    }
+                if (!first_grouped_action) grouped_actions << " | ";
+                first_grouped_action = false;
+                grouped_actions
+                    << "agent_id=" << agent_id
+                    << " state=" << AgentStateName(after.termination_reason)
+                    << " action_id=" << action.action_id()
+                    << " action=" << kActionNames[action.action_id()]
+                    << " from=(" << before.grid_x << ',' << before.grid_y
+                    << ") to=(" << after.grid_x << ',' << after.grid_y
+                    << ") blocked="
+                    << (after.last_move_blocked ? "true" : "false");
+                if (after.done && !grouped_console_frame) {
+                    LOG_INFO(
+                        "Exec",
+                        "episode=%s action_frame_id=%d "
+                        "result_frame_id=%d agent_id=%d state=%s "
+                        "action_id=%d action=%s from=(%d,%d) "
+                        "to=(%d,%d) blocked=%s terminal=true",
+                        cursor.episode_id.c_str(), action_frame_id,
+                        result_frame_id, agent_id,
+                        AgentStateName(after.termination_reason),
+                        action.action_id(), kActionNames[action.action_id()],
+                        before.grid_x, before.grid_y, after.grid_x,
+                        after.grid_y,
+                        after.last_move_blocked ? "true" : "false");
                 }
             }
             if (chain_failed) break;
+            if (grouped_console_frame && !first_grouped_action) {
+                LOG_INFO(
+                    "Exec",
+                    "episode=%s action_frame_id=%d result_frame_id=%d "
+                    "agents=[%s]",
+                    cursor.episode_id.c_str(), action_frame_id,
+                    result_frame_id, grouped_actions.str().c_str());
+            }
             environment.AdvanceFrame();
             if (config.viz.recording_enabled &&
                 environment.GetFrameId() % config.viz.interval == 0) {
@@ -1074,6 +1162,16 @@ int main(int argc, char* argv[]) {
             break;
         }
         episode_active = false;
+        std::string outcome_log;
+        std::string outcome_error;
+        if (!RenderEpisodeOutcome(
+                end_response, cursor.episode_id,
+                environment.GetAgentNum(), outcome_log, outcome_error)) {
+            LOG_ERROR("Main", "%s", outcome_error.c_str());
+            chain_failed = true;
+            break;
+        }
+        LOG_INFO("Outcome", "%s", outcome_log.c_str());
         ++episode_number;
     }
 

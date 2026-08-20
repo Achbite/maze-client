@@ -238,21 +238,25 @@ void MazeEnv::Reset() {
 }
 
 // ---- 执行网格级移动 ----
-void MazeEnv::Step(int agent_id, int action_id) {
+bool MazeEnv::Step(int agent_id, int action_id, std::string& error) {
+    error.clear();
     if (agent_id < 0 || agent_id >= static_cast<int>(agents_.size())) {
-        return;
+        error = "agent_id is outside the environment assignment";
+        return false;
     }
 
     AgentInfo& agent = agents_[agent_id];
 
     // 已结束的 Agent 不再移动
     if (agent.done) {
-        return;
+        error = "AIServer returned an action for a terminal Agent";
+        return false;
     }
 
     // 动作范围校验
     if (action_id < 0 || action_id > 8) {
-        action_id = 0;
+        error = "action_id is outside the Maze action contract";
+        return false;
     }
 
     // ---- 1. 计算目标网格 ----
@@ -298,6 +302,7 @@ void MazeEnv::Step(int agent_id, int action_id) {
         agent.done = true;
         agent.termination_reason = AgentTerminationReason::TimeLimit;
     }
+    return true;
 }
 
 // ---- 帧号递增 ----

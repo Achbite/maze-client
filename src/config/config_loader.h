@@ -7,7 +7,7 @@
 
 // ---- 运行参数（main 使用）----
 struct RunConfig {
-    // agent_num 与 workload 仅由 AIServer 的 TaskSpec 写入，不从本地配置读取。
+    // agent_num 由 AIServer EnvironmentRuntimeSpec 写入，不从本地配置读取。
     int   agent_num     = 0;
     int   log_interval  = 100;
     std::string client_instance_id;
@@ -47,7 +47,6 @@ struct VizConfig {
 struct ExpectedAssignmentConfig {
     std::optional<std::string> map_id;
     std::optional<std::string> map_sha256;
-    std::optional<int> agent_count;
 };
 
 struct ClientConfigOverrides {

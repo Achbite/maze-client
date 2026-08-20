@@ -123,8 +123,8 @@ if [[ "${replay_dir}" != /* ]] ||
 fi
 case "${workload}:${replay_policy}" in
     training:disabled)
-        if [ "${behavior_policy_scope}" != "training-fragment" ]; then
-            echo "Training requires fragment-scoped behavior policy" >&2
+        if [ "${behavior_policy_scope}" != "training-agent-segment" ]; then
+            echo "Training requires Agent-segment-scoped behavior policy" >&2
             exit 1
         fi
         if [[ ! "${model_step}" =~ ^[0-9]+$ ]] ||

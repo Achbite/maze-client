@@ -60,7 +60,6 @@ static bool ValidateComponentEnvironment(std::string& error) {
     static const std::set<std::string> allowed = {
         "RL_CLIENT_BIN",
         "RL_ENV_MAP_REGISTRY_DIR",
-        "RL_EXPECTED_AGENT_COUNT",
         "RL_EXPECTED_TASK_MAP_ID",
         "RL_EXPECTED_TASK_MAP_SHA256",
         "RL_REPLAY_BIN",
@@ -83,13 +82,16 @@ static bool ValidateComponentEnvironment(std::string& error) {
         const auto separator = entry.find('=');
         const std::string name = entry.substr(0, separator);
         if (allowed.count(name) != 0) continue;
-        if (retired.count(name) != 0 ||
-            HasPrefix(name, "RL_AISERVER_") ||
-            HasPrefix(name, "RL_TASK_") || HasPrefix(name, "RL_PPO_") ||
-            HasPrefix(name, "RL_EXPECTED_") || HasPrefix(name, "RL_ENV_") ||
-            name == "RL_RUN_ID" || name == "RL_POD_ATTEMPT_ID") {
+        if (retired.count(name) != 0 || name == "RL_RUN_ID" ||
+            name == "RL_POD_ATTEMPT_ID" || name == "RL_TASK_ID") {
             error = "unknown component configuration environment: " + name;
             return false;
+        }
+        if (HasPrefix(name, "RL_AISERVER_") ||
+            HasPrefix(name, "RL_TASK_") || HasPrefix(name, "RL_PPO_") ||
+            HasPrefix(name, "RL_EXPECTED_") || HasPrefix(name, "RL_ENV_")) {
+            LOG_WARN("Config", "ignoring unknown component environment: %s",
+                     name.c_str());
         }
     }
     return true;
@@ -268,7 +270,6 @@ bool LoadClientConfig(const std::string& yaml_path,
         "viz.server_port",
         "expected.map_id",
         "expected.map_sha256",
-        "expected.agent_count",
     };
     for (const auto& entry : entries) {
         const std::string field = entry.section + "." + entry.key;
@@ -290,7 +291,6 @@ bool LoadClientConfig(const std::string& yaml_path,
         {"viz", "server_port"},
         {"expected", "map_id"},
         {"expected", "map_sha256"},
-        {"expected", "agent_count"},
     };
     for (const auto& field : required) {
         if (FindValue(entries, field.first, field.second).empty()) {
@@ -338,13 +338,6 @@ bool LoadClientConfig(const std::string& yaml_path,
     if (configured_map_sha256 != "null") {
         out_config.expected.map_sha256 = configured_map_sha256;
     }
-    const std::string configured_agent_count =
-        FindValue(entries, "expected", "agent_count");
-    if (configured_agent_count != "null") {
-        out_config.expected.agent_count =
-            SafeInt(configured_agent_count, std::numeric_limits<int>::min());
-    }
-
     const auto record_override = [&](const char* field) {
         report.environment_overridden_fields.emplace_back(field);
     };
@@ -384,16 +377,6 @@ bool LoadClientConfig(const std::string& yaml_path,
     if (expected_string.has_value()) {
         out_config.expected.map_sha256 = *expected_string;
         record_override("expected.map_sha256");
-    }
-    std::optional<int> expected_agents;
-    if (!ReadEnvironmentInt("RL_EXPECTED_AGENT_COUNT", expected_agents,
-                            error)) {
-        LOG_ERROR("Config", "%s", error.c_str());
-        return false;
-    }
-    if (expected_agents.has_value()) {
-        out_config.expected.agent_count = *expected_agents;
-        record_override("expected.agent_count");
     }
     if (overrides.server_host.has_value() !=
         overrides.server_port.has_value()) {
@@ -489,9 +472,7 @@ bool LoadClientConfig(const std::string& yaml_path,
         (!out_config.expected.map_id.has_value() ||
          std::regex_match(*out_config.expected.map_id, map_id_pattern)) &&
         (!out_config.expected.map_sha256.has_value() ||
-         IsLowerSha256(*out_config.expected.map_sha256)) &&
-        (!out_config.expected.agent_count.has_value() ||
-         *out_config.expected.agent_count > 0);
+         IsLowerSha256(*out_config.expected.map_sha256));
     if (out_config.run.client_instance_id.empty() ||
         out_config.run.environment_instance_id.empty() ||
         out_config.env.map_registry_dir.empty() ||
@@ -542,18 +523,13 @@ bool LoadClientConfig(const std::string& yaml_path,
     LOG_INFO("Config", "viz: output_dir=%s, interval=%d, server_port=%d",
              out_config.viz.output_dir.c_str(), out_config.viz.interval,
              out_config.viz.server_port);
-    const std::string expected_agent_count =
-        out_config.expected.agent_count.has_value()
-            ? std::to_string(*out_config.expected.agent_count)
-            : "<none>";
     LOG_INFO(
         "Config",
-        "expected assignment: map=%s digest=%s agents=%s",
+        "expected map assignment: map=%s digest=%s",
         out_config.expected.map_id.has_value()
             ? out_config.expected.map_id->c_str() : "<none>",
         out_config.expected.map_sha256.has_value()
-            ? out_config.expected.map_sha256->c_str() : "<none>",
-        expected_agent_count.c_str());
+            ? out_config.expected.map_sha256->c_str() : "<none>");
     error.clear();
     return true;
 }

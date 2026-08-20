@@ -2,9 +2,9 @@
 
 [简体中文](README.md) | English
 
-Maze Client connects to AIServer and executes environment Episodes. For the A3
-local chain, developers start Learner, AIServer, and Client separately;
-Framework no longer orchestrates runtime.
+Maze Client connects to AIServer and executes environment Episodes. In training,
+start it after Learner and AIServer are ready. Evaluation requires only AIServer
+to be started first.
 
 ## 1. Development container, incremental build, and tests
 
@@ -49,9 +49,10 @@ model/manifest digests. Evaluation assignments carry only the selected model
 file digest and never fabricate a training step or lineage.
 
 Client loads the TaskSpec-selected `<map_id>.json` exactly from the config
-default or `RL_ENV_MAP_REGISTRY_DIR`. The expected map/digest/agent variables
-only override config assertions that default to `null`; they never replace the
-runtime values sent by AIServer.
+default or `RL_ENV_MAP_REGISTRY_DIR`. The expected map/digest variables only
+override map assertions that default to `null`. Client has no Agent-count
+assertion or override; the actual count comes only from AIServer
+`OpenSessionRsp.EnvironmentRuntimeSpec.agent_count`.
 
 ## 3. View a local replay
 
@@ -61,17 +62,30 @@ internal `replay.sh` has no independent directory or port fallback. The
 evaluation `validation-manifest.json` records only the model SHA-256, not a
 training step.
 
+AIServer currently assigns one evaluation Episode. After it completes, the
+Client process exits normally while `run.sh` keeps the Replay HTTP service
+available. Press `Ctrl-C` to stop Replay and return to the shell. This persistent
+wrapper state is not a Client restart.
+
 Open:
 
 ```text
 http://127.0.0.1:9004/
 ```
 
-## 4. Formal artifacts and image
+## 4. Build the runtime image
 
-Only after Level 1/2 pass, user review, and clean savepoints may the host sync
-the formal Contracts artifact and run `bash build_image.sh`. The formal build
-never consumes development artifacts or a development-container build tree.
+The runtime image accepts only clean source and a synchronized formal Contracts
+artifact. Run from the host:
+
+```bash
+bash scripts/sync_contract_snapshot.sh
+bash build_image.sh
+```
+
+The build never consumes development artifacts or a development-container build
+tree. It prints the image reference derived from the current stack source
+identity.
 
 ## 5. Remove the development container
 
