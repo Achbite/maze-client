@@ -1,7 +1,8 @@
-build*/
-_deps/
+/build*/
+/_deps/
 .DS_Store
-log/
-logs/
+/log/
+/logs/
 *.pyc
 __pycache__/
+/.workspace/

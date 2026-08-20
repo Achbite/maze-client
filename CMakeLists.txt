@@ -23,8 +23,9 @@ else()
     set(PROTO_GEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
 endif()
 set(PROTO_SOURCES
-    ${PROTO_GEN_DIR}/maze.pb.cc
-    ${PROTO_GEN_DIR}/maze.grpc.pb.cc
+    ${PROTO_GEN_DIR}/common.pb.cc
+    ${PROTO_GEN_DIR}/maze_task.pb.cc
+    ${PROTO_GEN_DIR}/maze_task.grpc.pb.cc
 )
 
 # --- 公共头文件搜索路径 ---
@@ -40,6 +41,7 @@ set(COMMON_LIBS
     protobuf::libprotobuf
     ${GRPC_LIBRARIES}
     pthread
+    crypto
 )
 
 add_executable(maze_client main/main.cpp ${SHARED_SOURCES} ${PROTO_SOURCES})
@@ -48,9 +50,19 @@ target_link_libraries(maze_client PRIVATE ${COMMON_LIBS})
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(client_command_exchange_development_test
+        tests/lifecycle_command_transaction_test.cpp
+        src/grpc/grpc_client.cpp
+        ${PROTO_SOURCES}
+    )
+    target_include_directories(client_command_exchange_development_test PRIVATE
+        ${COMMON_INCLUDES}
+    )
+    target_link_libraries(client_command_exchange_development_test PRIVATE
+        ${COMMON_LIBS}
+    )
     add_test(
-        NAME replay_mode_contract
-        COMMAND bash
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/replay_mode_test.sh
+        NAME client_command_exchange_development_contract
+        COMMAND client_command_exchange_development_test
     )
 endif()

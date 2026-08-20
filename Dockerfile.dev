@@ -1,20 +1,26 @@
-ARG CLIENT_RUNTIME_IMAGE=rl-training/maze-client:test-001
-FROM ${CLIENT_RUNTIME_IMAGE}
+ARG CPP_DEV_BASE_IMAGE=python@sha256:b27df5841f3355e9473f9a516d38a6783b6c8dfeacaf2d14a240f443b368ddb6
+FROM ${CPP_DEV_BASE_IMAGE}
 
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ca-certificates \
+    ccache \
     cmake \
     git \
     libabsl-dev \
     libgrpc++-dev \
     libprotobuf-dev \
+    libssl-dev \
     make \
     ninja-build \
     pkg-config \
+    procps \
     protobuf-compiler \
     protobuf-compiler-grpc \
     && rm -rf /var/lib/apt/lists/*
 
+LABEL org.rl-training.dev-toolchain="cpp17-debian13"
 WORKDIR /workspace/maze-client
 ENTRYPOINT []
 CMD ["sleep", "infinity"]

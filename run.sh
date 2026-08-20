@@ -3,101 +3,33 @@
 set -u
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-workload="${1:-inference-smoke}"
-if [ "$#" -gt 0 ]; then
-    shift
-fi
-
-case "${workload}" in
-    inference-smoke|training|model-evaluation)
-        ;;
-    *)
-        echo "unknown workload: ${workload}" >&2
-        exit 2
-        ;;
-esac
-
 default_client_bin="${repo_dir}/build/maze_client"
 if [ -x "${repo_dir}/bin/maze_client" ]; then
     default_client_bin="${repo_dir}/bin/maze_client"
 fi
-client_bin="${MAZE_CLIENT_BIN:-${default_client_bin}}"
-client_config="${MAZE_CLIENT_CONFIG:-${repo_dir}/configs/client_config.yaml}"
-replay_port="${MAZE_REPLAY_PORT:-9004}"
-replay_dir="${MAZE_VIZ_OUTPUT_DIR:-${repo_dir}/log/viz}"
-replay_bin="${MAZE_REPLAY_BIN:-${repo_dir}/replay.sh}"
-replay_enabled=""
-requested_agents=""
-
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --config)
-            client_config="${2:?--config requires a value}"
-            shift 2
-            ;;
-        --aiserver)
-            address="${2:?--aiserver requires host:port}"
-            export MAZE_AISERVER_HOST="${address%:*}"
-            export MAZE_AISERVER_PORT="${address##*:}"
-            shift 2
-            ;;
-        --run-id)
-            export MAZE_RUN_ID="${2:?--run-id requires a value}"
-            shift 2
-            ;;
-        --agents)
-            requested_agents="${2:?--agents requires a value}"
-            export MAZE_AGENT_NUM="${requested_agents}"
-            shift 2
-            ;;
-        --episodes)
-            export MAZE_MAX_EPISODES="${2:?--episodes requires a value}"
-            shift 2
-            ;;
-        --max-steps)
-            export MAZE_MAX_STEPS="${2:?--max-steps requires a value}"
-            shift 2
-            ;;
-        --replay-dir)
-            replay_dir="${2:?--replay-dir requires a value}"
-            export MAZE_VIZ_OUTPUT_DIR="${replay_dir}"
-            shift 2
-            ;;
-        --replay-port)
-            replay_port="${2:?--replay-port requires a value}"
-            export MAZE_REPLAY_PORT="${replay_port}"
-            shift 2
-            ;;
-        --no-replay)
-            export MAZE_VIZ_ENABLED=false
-            shift
-            ;;
-        *)
-            echo "unknown argument: $1" >&2
-            exit 2
-            ;;
-    esac
-done
+client_bin="${RL_CLIENT_BIN:-${default_client_bin}}"
+replay_bin="${RL_REPLAY_BIN:-${repo_dir}/replay.sh}"
+session_policy_path="${RL_SESSION_POLICY_PATH:-/tmp/rl-client-session-policy.$$}"
 
 if [ ! -x "${client_bin}" ]; then
     echo "Client executable is missing: ${client_bin}" >&2
     exit 1
 fi
 
-export MAZE_WORKLOAD="${workload}"
-if [ "${workload}" = "training" ]; then
-    if [ -n "${requested_agents}" ] && [ "${requested_agents}" != "4" ]; then
-        echo "training requires exactly 4 agents" >&2
-        exit 2
-    fi
-    export MAZE_AGENT_NUM=4
-    export MAZE_VIZ_ENABLED=false
-else
-    export MAZE_VIZ_ENABLED="${MAZE_VIZ_ENABLED:-true}"
+# Help is a meta operation: it must not enter the OpenSession/Replay
+# supervision lifecycle. Business arguments remain byte-for-byte inputs to the
+# C++ config layer below.
+if [ "$#" -eq 1 ]; then
+    case "$1" in
+        --help|-h)
+            cd "${repo_dir}"
+            exec "${client_bin}" "$@"
+            ;;
+    esac
 fi
-replay_enabled="${MAZE_VIZ_ENABLED}"
-export MAZE_VIZ_OUTPUT_DIR="${replay_dir}"
-export MAZE_REPLAY_PORT="${replay_port}"
+
+export RL_SESSION_POLICY_PATH="${session_policy_path}"
+rm -f "${session_policy_path}"
 
 client_pid=""
 replay_pid=""
@@ -128,57 +60,152 @@ shutdown() {
     fi
     stopping=1
     terminate_process "${client_pid}" 4
+    client_pid=""
     terminate_process "${replay_pid}" 3
+    replay_pid=""
+    rm -f "${session_policy_path}"
 }
-trap shutdown EXIT TERM INT
 
-validation_id="${MAZE_VALIDATION_ID:-${MAZE_RUN_ID:-local-validation}}"
-if [ "${workload}" != "training" ] &&
-   [ "${replay_enabled}" = "true" ]; then
-    if [ ! -f "${replay_bin}" ]; then
-        echo "Replay launcher is missing: ${replay_bin}" >&2
-        exit 1
-    fi
-    mkdir -p "${replay_dir}"
-    bash "${replay_bin}" "${workload}" \
-        --dir "${replay_dir}" \
-        --host 0.0.0.0 \
-        --port "${replay_port}" \
-        --validation-id "${validation_id}" &
-    replay_pid=$!
+on_signal() {
+    shutdown
+    exit 0
+}
 
-    replay_ready=0
-    for _ in $(seq 1 50); do
-        if ! kill -0 "${replay_pid}" 2>/dev/null; then
-            wait "${replay_pid}"
-            exit $?
-        fi
-        if (exec 3<>"/dev/tcp/127.0.0.1/${replay_port}") 2>/dev/null; then
-            exec 3>&-
-            exec 3<&-
-            replay_ready=1
-            break
-        fi
-        sleep 0.1
-    done
-    if [ "${replay_ready}" -ne 1 ]; then
-        echo "Replay server readiness timeout" >&2
-        exit 1
+trap shutdown EXIT
+trap on_signal TERM INT
+
+cd "${repo_dir}"
+"${client_bin}" "$@" &
+client_pid=$!
+
+policy_ready=0
+for _ in $(seq 1 100); do
+    if [ -s "${session_policy_path}" ]; then
+        policy_ready=1
+        break
     fi
+    if ! kill -0 "${client_pid}" 2>/dev/null; then
+        wait "${client_pid}"
+        status=$?
+        client_pid=""
+        echo "Client exited before publishing OpenSession policy" >&2
+        if [ "${status}" -eq 0 ]; then
+            status=1
+        fi
+        exit "${status}"
+    fi
+    sleep 0.1
+done
+if [ "${policy_ready}" -ne 1 ]; then
+    echo "OpenSession policy readiness timeout" >&2
+    exit 1
 fi
 
-"${client_bin}" "${client_config}" &
-client_pid=$!
+policy_value() {
+    awk -v key="$1" \
+        'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' \
+        "${session_policy_path}"
+}
+
+workload="$(policy_value workload)"
+replay_policy="$(policy_value replay_policy)"
+behavior_policy_scope="$(policy_value behavior_policy_scope)"
+model_step="$(policy_value model_step)"
+model_lineage_id="$(policy_value model_lineage_id)"
+model_checksum="$(policy_value model_artifact_digest)"
+replay_dir="$(policy_value replay_output_dir)"
+replay_port="$(policy_value replay_server_port)"
+if [[ "${replay_dir}" != /* ]] ||
+   [[ ! "${replay_port}" =~ ^[0-9]+$ ]] ||
+   [ "${replay_port}" -le 0 ] || [ "${replay_port}" -gt 65535 ]; then
+    echo "Client effective Replay config handoff is invalid" >&2
+    exit 1
+fi
+case "${workload}:${replay_policy}" in
+    training:disabled)
+        if [ "${behavior_policy_scope}" != "training-agent-segment" ]; then
+            echo "Training requires Agent-segment-scoped behavior policy" >&2
+            exit 1
+        fi
+        if [[ ! "${model_step}" =~ ^[0-9]+$ ]] ||
+           [ -z "${model_lineage_id}" ]; then
+            echo "Training requires lineage and an explicit model step" >&2
+            exit 1
+        fi
+        ;;
+    evaluation:record-and-serve)
+        if [ "${behavior_policy_scope}" != "evaluation-episode" ]; then
+            echo "Evaluation requires an episode-scoped behavior policy" >&2
+            exit 1
+        fi
+        if [ -n "${model_step}" ] || [ -n "${model_lineage_id}" ] ||
+           [[ ! "${model_checksum}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Evaluation Replay requires a digest-only model binding" >&2
+            exit 1
+        fi
+        if [ ! -f "${replay_bin}" ]; then
+            echo "Replay launcher is missing: ${replay_bin}" >&2
+            exit 1
+        fi
+        mkdir -p "${replay_dir}"
+        validation_id="${RL_VALIDATION_ID:-local-validation}"
+        if [[ ! "${validation_id}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Invalid validation ID" >&2
+            exit 1
+        fi
+        validation_manifest="${replay_dir}/validation-manifest.json"
+        validation_manifest_temp="${validation_manifest}.tmp.$$"
+        if ! printf '{"schema_version":2,"validation_id":"%s","model":{"sha256":"%s"},"parameters":{"workload":"%s"}}\n' \
+            "${validation_id}" "${model_checksum}" \
+            "${workload}" > "${validation_manifest_temp}"; then
+            rm -f "${validation_manifest_temp}"
+            exit 1
+        fi
+        if ! mv "${validation_manifest_temp}" "${validation_manifest}"; then
+            rm -f "${validation_manifest_temp}"
+            exit 1
+        fi
+        RL_VIZ_OUTPUT_DIR="${replay_dir}" \
+        RL_REPLAY_PORT="${replay_port}" \
+            bash "${replay_bin}" "${workload}" &
+        replay_pid=$!
+
+        replay_ready=0
+        for _ in $(seq 1 50); do
+            if ! kill -0 "${replay_pid}" 2>/dev/null; then
+                wait "${replay_pid}"
+                exit $?
+            fi
+            if (exec 3<>"/dev/tcp/127.0.0.1/${replay_port}") \
+                2>/dev/null; then
+                exec 3>&-
+                exec 3<&-
+                replay_ready=1
+                break
+            fi
+            sleep 0.1
+        done
+        if [ "${replay_ready}" -ne 1 ]; then
+            echo "Replay server readiness timeout" >&2
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Invalid OpenSession policy: ${workload}:${replay_policy}" >&2
+        exit 1
+        ;;
+esac
+
 wait "${client_pid}"
 client_status=$?
 client_pid=""
 
-if [ "${workload}" = "training" ] ||
-   [ "${replay_enabled}" != "true" ]; then
+if [ "${replay_policy}" = "disabled" ]; then
     exit "${client_status}"
 fi
 
-result_path="${MAZE_VALIDATION_RESULT_PATH:-${replay_dir}/client-result.json}"
+validation_id="${RL_VALIDATION_ID:-local-validation}"
+result_path="${RL_VALIDATION_RESULT_PATH:-${replay_dir}/client-result.json}"
 completed_ts="$(date +%s)"
 mkdir -p "$(dirname "${result_path}")"
 result_temp="${result_path}.tmp.$$"
