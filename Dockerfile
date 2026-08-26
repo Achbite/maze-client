@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=build /source/build/maze_client /opt/rl/maze-client/bin/maze_client
 COPY configs /opt/rl/maze-client/configs
+COPY component-contract /opt/rl/component-contract
 COPY maps /opt/rl/maze-client/maps
 COPY run.sh /opt/rl/maze-client/run.sh
 COPY replay.sh /opt/rl/maze-client/replay.sh
@@ -48,7 +49,6 @@ RUN chmod +x /opt/rl/maze-client/bin/maze_client \
     /opt/rl/maze-client/scripts/entrypoint.sh
 
 WORKDIR /opt/rl/maze-client
-ENV RL_SESSION_POLICY_PATH=/tmp/rl-client-session-policy
 EXPOSE 9004
 HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
     CMD ["test", "-s", "/tmp/rl-client-session-policy"]

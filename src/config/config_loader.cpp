@@ -63,7 +63,6 @@ static bool ValidateComponentEnvironment(std::string& error) {
         "RL_EXPECTED_TASK_MAP_ID",
         "RL_EXPECTED_TASK_MAP_SHA256",
         "RL_REPLAY_BIN",
-        "RL_SESSION_POLICY_PATH",
         "RL_VALIDATION_ID",
         "RL_VALIDATION_RESULT_PATH",
     };
