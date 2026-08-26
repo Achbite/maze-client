@@ -40,6 +40,8 @@ using maze_client::PrepareAppliedAgentUpdate;
 using maze_client::RecordExecutedAction;
 
 constexpr const char* kDefaultConfigPath = "configs/client_config.yaml";
+constexpr const char* kManagedReadyMarker =
+    "/run/rl/client-managed-ready";
 constexpr std::uint32_t kSessionProtocolVersion = 4;
 constexpr const char* kObservationSchemaId = "maze.observation.v3";
 constexpr std::uint32_t kObservationSchemaVersion = 1;
@@ -79,6 +81,50 @@ const char* kActionNames[9] = {
 std::atomic<bool> g_stop_requested{false};
 
 void HandleSignal(int) { g_stop_requested.store(true); }
+
+bool PublishManagedReadyMarker(const std::string& aiserver_alias,
+                               std::string& error) {
+    if (std::getenv("RL_CONFIG_PATH") == nullptr) return true;
+    namespace fs = std::filesystem;
+    std::error_code filesystem_error;
+    const fs::path destination(kManagedReadyMarker);
+    fs::create_directories(destination.parent_path(), filesystem_error);
+    if (filesystem_error) {
+        error = "cannot create managed readiness directory: " +
+                filesystem_error.message();
+        return false;
+    }
+    const fs::path temporary =
+        destination.string() + ".tmp." + std::to_string(::getpid());
+    {
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) {
+            error = "cannot open managed readiness marker";
+            return false;
+        }
+        output << "aiserver_alias=" << aiserver_alias << "\n";
+        output.flush();
+        if (!output) {
+            fs::remove(temporary, filesystem_error);
+            error = "cannot flush managed readiness marker";
+            return false;
+        }
+    }
+    fs::rename(temporary, destination, filesystem_error);
+    if (filesystem_error) {
+        fs::remove(temporary, filesystem_error);
+        error = "cannot publish managed readiness marker: " +
+                filesystem_error.message();
+        return false;
+    }
+    return true;
+}
+
+void RemoveManagedReadyMarker() {
+    if (std::getenv("RL_CONFIG_PATH") == nullptr) return;
+    std::error_code ignored;
+    std::filesystem::remove(kManagedReadyMarker, ignored);
+}
 
 bool IsDigest(const common::ContentDigest& digest) {
     return maze_client::IsSha256Digest(digest);
@@ -252,11 +298,8 @@ bool PublishSessionPolicy(const std::string& workload,
                           const std::string& replay_policy,
                           const maze::BehaviorPolicyBinding& policy,
                           const VizConfig& viz) {
-    const char* raw_path = std::getenv("RL_SESSION_POLICY_PATH");
-    if (raw_path == nullptr || raw_path[0] == '\0') return true;
-
     namespace fs = std::filesystem;
-    const fs::path path(raw_path);
+    const fs::path path("/tmp/rl-client-session-policy");
     std::error_code error;
     if (!path.parent_path().empty()) {
         fs::create_directories(path.parent_path(), error);
@@ -467,6 +510,29 @@ int main(int argc, char* argv[]) {
                         config.network.server_port)) {
         Logger::Instance().Close();
         return 1;
+    }
+
+    if (std::getenv("RL_CONFIG_PATH") != nullptr) {
+        std::string readiness_error;
+        if (!PublishManagedReadyMarker(config.network.server_host,
+                                       readiness_error)) {
+            LOG_ERROR("Main", "Client managed readiness 发布失败: %s",
+                      readiness_error.c_str());
+            client.Disconnect();
+            Logger::Instance().Close();
+            return 1;
+        }
+        LOG_INFO(
+            "Main",
+            "Client managed-ready; waiting for a later training admission "
+            "owner before OpenSession");
+        while (!g_stop_requested.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        RemoveManagedReadyMarker();
+        client.Disconnect();
+        Logger::Instance().Close();
+        return 0;
     }
 
     maze::OpenSessionReq open_request;

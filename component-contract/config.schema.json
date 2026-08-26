@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rl-training.local/schemas/maze-client-config-p1a.json",
+  "type": "object",
+  "required": ["run", "env", "network", "viz", "expected"],
+  "additionalProperties": true
+}

@@ -9,7 +9,16 @@ if [ -x "${repo_dir}/bin/maze_client" ]; then
 fi
 client_bin="${RL_CLIENT_BIN:-${default_client_bin}}"
 replay_bin="${RL_REPLAY_BIN:-${repo_dir}/replay.sh}"
-session_policy_path="${RL_SESSION_POLICY_PATH:-/tmp/rl-client-session-policy.$$}"
+session_policy_path="/tmp/rl-client-session-policy"
+managed=0
+if [ -n "${RL_CONFIG_PATH:-}" ]; then
+    managed=1
+    if [[ "${RL_CONFIG_PATH}" != /* ]]; then
+        echo "RL_CONFIG_PATH must be absolute" >&2
+        exit 2
+    fi
+    rm -f /run/rl/readiness.json /run/rl/client-managed-ready
+fi
 
 if [ ! -x "${client_bin}" ]; then
     echo "Client executable is missing: ${client_bin}" >&2
@@ -28,7 +37,6 @@ if [ "$#" -eq 1 ]; then
     esac
 fi
 
-export RL_SESSION_POLICY_PATH="${session_policy_path}"
 rm -f "${session_policy_path}"
 
 client_pid=""
@@ -64,6 +72,9 @@ shutdown() {
     terminate_process "${replay_pid}" 3
     replay_pid=""
     rm -f "${session_policy_path}"
+    if [ "${managed}" -eq 1 ]; then
+        rm -f /run/rl/readiness.json /run/rl/client-managed-ready
+    fi
 }
 
 on_signal() {
@@ -77,6 +88,38 @@ trap on_signal TERM INT
 cd "${repo_dir}"
 "${client_bin}" "$@" &
 client_pid=$!
+
+if [ "${managed}" -eq 1 ]; then
+    managed_ready=0
+    for _ in $(seq 1 100); do
+        if [ -s /run/rl/client-managed-ready ]; then
+            managed_ready=1
+            break
+        fi
+        if ! kill -0 "${client_pid}" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "${managed_ready}" -ne 1 ]; then
+        echo "Client managed readiness timeout" >&2
+        exit 1
+    fi
+    aiserver_alias="$(awk 'index($0, "aiserver_alias=") == 1 { print substr($0, 16); exit }' /run/rl/client-managed-ready)"
+    if [[ ! "${aiserver_alias}" =~ ^aiserver-[0-9]+$ ]]; then
+        echo "Client managed AIServer alias is invalid" >&2
+        exit 1
+    fi
+    python3 scripts/publish_readiness.py \
+        --component maze-client \
+        --config "${RL_CONFIG_PATH}" \
+        --fact grpc_transport=connected \
+        --fact aiserver_alias="${aiserver_alias}"
+    wait "${client_pid}"
+    client_status=$?
+    client_pid=""
+    exit "${client_status}"
+fi
 
 policy_ready=0
 for _ in $(seq 1 100); do
