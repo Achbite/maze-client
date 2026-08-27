@@ -54,6 +54,22 @@ override map assertions that default to `null`. Client has no Agent-count
 assertion or override; the actual count comes only from AIServer
 `OpenSessionRsp.EnvironmentRuntimeSpec.agent_count`.
 
+Infra managed mode is selected by `RL_CONFIG_PATH`. After connecting to its
+paired AIServer, Client first publishes `/run/rl/readiness.json` and waits for
+the owning Node to write `/run/rl/training-admission.v1.json` for the current
+attempt. `run.sh` validates that token exactly against
+`/run/rl/execution-identity.v1.json`, including the schema, Allocation,
+NodeSession, PodAttempt, ComponentAttempt, and generation. It atomically
+publishes the process gate, and the C++ Client enters the existing OpenSession
+only after that gate appears. Unmanaged execution does not require Infra
+admission and retains its existing behavior.
+
+The image healthcheck follows the same mode boundary: managed execution checks
+`/run/rl/readiness.json`, while unmanaged execution checks the existing
+`/tmp/rl-client-session-policy`. A managed Client can therefore report that it
+is connected and admissible while waiting for the topology-wide release; the
+healthcheck does not claim training participation.
+
 ## 3. View a local replay
 
 `evaluation` uses config's default replay port `9004`; Training does not start
@@ -75,17 +91,17 @@ http://127.0.0.1:9004/
 
 ## 4. Build the runtime image
 
-The runtime image accepts only clean source and a synchronized formal Contracts
-artifact. Run from the host:
+Build the current source under a new explicit tag from the host:
 
 ```bash
-bash scripts/sync_contract_snapshot.sh
-bash build_image.sh
+RL_CLIENT_IMAGE_TAG=p1-d3t-0.14.1 bash build_image.sh
 ```
 
-The build never consumes development artifacts or a development-container build
-tree. It prints the image reference derived from the current stack source
-identity.
+The build entrypoint does not compute source, image, or binary hashes and does
+not create a second stack identity. The Dockerfile compiles and packages the
+current Client, configuration, and component contract. An existing tag is never
+overwritten; callers must choose a new tag. The first P1 D3-T artifact is
+`rl-training/maze-client:p1-d3t-0.14.0`.
 
 ## 5. Remove the development container
 

@@ -1,0 +1,37 @@
+{
+  "schema_version": "rl.component-contract.v1",
+  "component": "maze-client",
+  "bootstrap": {
+    "config_path_environment": "RL_CONFIG_PATH"
+  },
+  "config_schema": {
+    "path": "/opt/rl/component-contract/config.schema.json"
+  },
+  "config_files": [
+    {
+      "role": "main",
+      "image_path": "/opt/rl/maze-client/configs/client_config.yaml",
+      "mount_filename": "client.yaml"
+    }
+  ],
+  "readiness": {
+    "receipt_path": "/run/rl/readiness.json",
+    "schema_version": "rl.component-readiness.v1"
+  },
+  "training_admission": {
+    "token_path": "/run/rl/training-admission.v1.json",
+    "schema_version": "rl.training-admission.v1"
+  },
+  "compatibility": {
+    "package_version": "0.14.0",
+    "artifact_digest": ""
+  },
+  "supported_maps": [
+    {
+      "map_id": "maze_117436372",
+      "canonical_sha256": "861e0bb22a8b9a2ed689527d080c65ec2c822367e985c49753e1be9cf3ca8ae9",
+      "registry": "maps/test",
+      "map_schema_version": "maze.map.v1"
+    }
+  ]
+}

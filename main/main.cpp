@@ -42,6 +42,8 @@ using maze_client::RecordExecutedAction;
 constexpr const char* kDefaultConfigPath = "configs/client_config.yaml";
 constexpr const char* kManagedReadyMarker =
     "/run/rl/client-managed-ready";
+constexpr const char* kTrainingAdmittedMarker =
+    "/run/rl/client-training-admitted";
 constexpr std::uint32_t kSessionProtocolVersion = 4;
 constexpr const char* kObservationSchemaId = "maze.observation.v3";
 constexpr std::uint32_t kObservationSchemaVersion = 1;
@@ -124,6 +126,34 @@ void RemoveManagedReadyMarker() {
     if (std::getenv("RL_CONFIG_PATH") == nullptr) return;
     std::error_code ignored;
     std::filesystem::remove(kManagedReadyMarker, ignored);
+}
+
+bool TrainingAdmissionReady(std::string& error) {
+    namespace fs = std::filesystem;
+    std::error_code filesystem_error;
+    const fs::path marker(kTrainingAdmittedMarker);
+    const auto status = fs::symlink_status(marker, filesystem_error);
+    if (filesystem_error) {
+        if (filesystem_error == std::errc::no_such_file_or_directory) {
+            return false;
+        }
+        error = "cannot inspect training admission marker: " +
+                filesystem_error.message();
+        return false;
+    }
+    if (status.type() == fs::file_type::not_found) {
+        return false;
+    }
+    if (!fs::is_regular_file(status)) {
+        error = "training admission marker is not a regular file";
+        return false;
+    }
+    const auto size = fs::file_size(marker, filesystem_error);
+    if (filesystem_error || size == 0 || size > 4096) {
+        error = "training admission marker size is invalid";
+        return false;
+    }
+    return true;
 }
 
 bool IsDigest(const common::ContentDigest& digest) {
@@ -524,15 +554,30 @@ int main(int argc, char* argv[]) {
         }
         LOG_INFO(
             "Main",
-            "Client managed-ready; waiting for a later training admission "
-            "owner before OpenSession");
+            "Client managed-ready; waiting for exact training admission "
+            "before OpenSession");
         while (!g_stop_requested.load()) {
+            std::string admission_error;
+            if (TrainingAdmissionReady(admission_error)) {
+                LOG_INFO("Main", "Training admission validated; entering OpenSession");
+                break;
+            }
+            if (!admission_error.empty()) {
+                LOG_ERROR("Main", "Training admission marker invalid: %s",
+                          admission_error.c_str());
+                RemoveManagedReadyMarker();
+                client.Disconnect();
+                Logger::Instance().Close();
+                return 1;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
-        RemoveManagedReadyMarker();
-        client.Disconnect();
-        Logger::Instance().Close();
-        return 0;
+        if (g_stop_requested.load()) {
+            RemoveManagedReadyMarker();
+            client.Disconnect();
+            Logger::Instance().Close();
+            return 0;
+        }
     }
 
     maze::OpenSessionReq open_request;

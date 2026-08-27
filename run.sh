@@ -10,6 +10,9 @@ fi
 client_bin="${RL_CLIENT_BIN:-${default_client_bin}}"
 replay_bin="${RL_REPLAY_BIN:-${repo_dir}/replay.sh}"
 session_policy_path="/tmp/rl-client-session-policy"
+training_admission_path="/run/rl/training-admission.v1.json"
+execution_identity_path="/run/rl/execution-identity.v1.json"
+training_admitted_marker="/run/rl/client-training-admitted"
 managed=0
 if [ -n "${RL_CONFIG_PATH:-}" ]; then
     managed=1
@@ -17,7 +20,7 @@ if [ -n "${RL_CONFIG_PATH:-}" ]; then
         echo "RL_CONFIG_PATH must be absolute" >&2
         exit 2
     fi
-    rm -f /run/rl/readiness.json /run/rl/client-managed-ready
+    rm -f /run/rl/readiness.json /run/rl/client-managed-ready "${training_admitted_marker}"
 fi
 
 if [ ! -x "${client_bin}" ]; then
@@ -73,7 +76,7 @@ shutdown() {
     replay_pid=""
     rm -f "${session_policy_path}"
     if [ "${managed}" -eq 1 ]; then
-        rm -f /run/rl/readiness.json /run/rl/client-managed-ready
+        rm -f /run/rl/readiness.json /run/rl/client-managed-ready "${training_admitted_marker}"
     fi
 }
 
@@ -115,8 +118,35 @@ if [ "${managed}" -eq 1 ]; then
         --config "${RL_CONFIG_PATH}" \
         --fact grpc_transport=connected \
         --fact aiserver_alias="${aiserver_alias}"
-    wait "${client_pid}"
-    client_status=$?
+
+    while kill -0 "${client_pid}" 2>/dev/null; do
+        if [ -s "${training_admission_path}" ]; then
+            python3 scripts/validate_training_admission.py \
+                --execution "${execution_identity_path}" \
+                --token "${training_admission_path}" \
+                --marker "${training_admitted_marker}"
+            break
+        fi
+        sleep 0.1
+    done
+    if [ ! -s "${training_admitted_marker}" ]; then
+        if wait "${client_pid}"; then
+            client_status=0
+        else
+            client_status=$?
+        fi
+        client_pid=""
+        echo "Client exited before receiving exact training admission" >&2
+        if [ "${client_status}" -eq 0 ]; then
+            client_status=1
+        fi
+        exit "${client_status}"
+    fi
+    if wait "${client_pid}"; then
+        client_status=0
+    else
+        client_status=$?
+    fi
     client_pid=""
     exit "${client_status}"
 fi

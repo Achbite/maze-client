@@ -47,6 +47,18 @@ Client 从 config 默认值或 `RL_ENV_MAP_REGISTRY_DIR` 覆盖的 registry 精�
 Client 不再提供 Agent 数断言或覆盖；实际数量只来自 AIServer
 `OpenSessionRsp.EnvironmentRuntimeSpec.agent_count`。
 
+Infra managed 模式由 `RL_CONFIG_PATH` 标识。Client 连接配对 AIServer 后先发布
+`/run/rl/readiness.json`，随后等待 Node 写入当前 attempt 的
+`/run/rl/training-admission.v1.json`。`run.sh` 将 token 与
+`/run/rl/execution-identity.v1.json` 做精确 schema、Allocation、NodeSession、PodAttempt、
+ComponentAttempt 和 generation 校验，原子发布本进程使用的 gate；C++ Client 看到 gate 后才进入既有
+`OpenSession`。非 managed 模式不要求 Infra admission，行为保持不变。
+
+镜像 healthcheck 按同一个运行模式读取事实：managed 模式检查
+`/run/rl/readiness.json`，非 managed 模式检查既有 `/tmp/rl-client-session-policy`。因此 managed Client
+在等待整体训练放行时仍正确表示其“已连接、可被 Controller 放行”的 readiness，healthcheck 本身不伪造
+training participation。
+
 ## 3. 查看本地回放
 
 `evaluation` 默认使用 config 中的回放端口 `9004`，Training 不启动回放。
@@ -67,15 +79,15 @@ http://127.0.0.1:9004/
 
 ## 4. 构建运行镜像
 
-运行镜像只接受 clean source 和已同步的正式 Contracts artifact。在宿主机执行：
+在宿主机用一个新的、显式 tag 构建当前源码：
 
 ```bash
-bash scripts/sync_contract_snapshot.sh
-bash build_image.sh
+RL_CLIENT_IMAGE_TAG=p1-d3t-0.14.1 bash build_image.sh
 ```
 
-正式构建不读取开发 artifact 或开发容器 build 目录，并输出按当前 stack source identity
-计算的镜像引用。
+构建入口不计算 source/image/binary 哈希，也不生成第二套 stack identity。它直接由 Dockerfile 编译并
+封装当前 Client、配置和 component contract；若 tag 已存在则拒绝覆盖，调用方必须选择新 tag。P1 首个
+D3-T 制品是 `rl-training/maze-client:p1-d3t-0.14.0`。
 
 ## 5. 清理开发容器
 
