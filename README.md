@@ -5,6 +5,22 @@
 Maze Client 连接 AIServer 并执行环境 Episode。训练时在 Learner、AIServer ready 后启动；
 评测时只需要先启动 AIServer。
 
+本地训练只运行 Learner、AIServer 和 Client 三个容器。`make shell` 是宿主机命令，会从同一父目录的
+源码准备开发制品，但不会自动下载依赖仓库。冷启动工作区至少需要以下同级目录：
+
+```text
+workspace/
+  rl-contracts/
+  rl-sample-pool/
+  rl-model-distributor/
+  rl-learner/
+  rl-aiserver/
+  maze-client/
+```
+
+前三个依赖仓只提供开发制品，不会增加运行容器。完整的三容器启动顺序也可参阅
+[rl-framework](https://github.com/Achbite/rl-framework)。
+
 ## 1. 开发容器、增量构建与测试
 
 ```bash
@@ -23,10 +39,16 @@ make build
 测试只能在仓库根通过 `bash ./test.sh` 启动；`build.sh`、Docker image 构建和其他 wrapper
 不会隐式运行测试。`make shell` 只能在宿主机执行。
 
-## 2. 手工连接 AIServer
+## 2. 启动 Client
+
+训练时先启动 Learner，再启动 AIServer，最后打开第三个宿主终端启动 Client：
 
 ```bash
+# 宿主机
+cd /path/to/workspace/maze-client
 make shell
+
+# 以下命令在 Client 容器内执行
 ./build.sh
 ./run.sh --help
 ./run.sh --config configs/client_config.yaml --aiserver maze-aiserver:9002
@@ -79,15 +101,15 @@ http://127.0.0.1:9004/
 
 ## 4. 构建运行镜像
 
-在宿主机用一个新的、显式 tag 构建当前源码：
+在宿主机用项目 tag 构建当前源码：
 
 ```bash
-RL_CLIENT_IMAGE_TAG=p1-d3t-0.14.1 bash build_image.sh
+RL_PROJECT_IMAGE_TAG=maze-tag-001 bash build_image.sh
 ```
 
 构建入口不计算 source/image/binary 哈希，也不生成第二套 stack identity。它直接由 Dockerfile 编译并
-封装当前 Client、配置和 component contract；若 tag 已存在则拒绝覆盖，调用方必须选择新 tag。P1 首个
-D3-T 制品是 `rl-training/maze-client:p1-d3t-0.14.0`。
+封装当前 Client、配置和 component contract。同名 tag 允许由后续微调构建直接覆盖；完整镜像引用为
+`rl-training/maze-client:maze-tag-001`。
 
 ## 5. 清理开发容器
 
