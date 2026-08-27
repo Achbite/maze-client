@@ -6,6 +6,25 @@ Maze Client connects to AIServer and executes environment Episodes. In training,
 start it after Learner and AIServer are ready. Evaluation requires only AIServer
 to be started first.
 
+Local training runs only three containers: Learner, AIServer, and Client.
+`make shell` is a host command that prepares development artifacts from sibling
+source repositories; it does not download those repositories. A fresh workspace
+therefore needs at least these sibling directories:
+
+```text
+workspace/
+  rl-contracts/
+  rl-sample-pool/
+  rl-model-distributor/
+  rl-learner/
+  rl-aiserver/
+  maze-client/
+```
+
+The first three repositories supply development artifacts only and do not add
+runtime containers. See [rl-framework](https://github.com/Achbite/rl-framework)
+for the complete three-container startup order.
+
 ## 1. Development container, incremental build, and tests
 
 ```bash
@@ -26,10 +45,17 @@ started only from the repository root with `bash ./test.sh`; `build.sh`, Docker
 image builds, and other wrappers do not run them implicitly. Run `make shell`
 only on the host.
 
-## 2. Connect to AIServer manually
+## 2. Start Client
+
+For training, start Learner first and AIServer second, then open a third host
+terminal for Client:
 
 ```bash
+# Host
+cd /path/to/workspace/maze-client
 make shell
+
+# Run the following commands inside the Client container
 ./build.sh
 ./run.sh --help
 ./run.sh --config configs/client_config.yaml --aiserver maze-aiserver:9002
@@ -54,6 +80,22 @@ override map assertions that default to `null`. Client has no Agent-count
 assertion or override; the actual count comes only from AIServer
 `OpenSessionRsp.EnvironmentRuntimeSpec.agent_count`.
 
+Infra managed mode is selected by `RL_CONFIG_PATH`. After connecting to its
+paired AIServer, Client first publishes `/run/rl/readiness.json` and waits for
+the owning Node to write `/run/rl/training-admission.v1.json` for the current
+attempt. `run.sh` validates that token exactly against
+`/run/rl/execution-identity.v1.json`, including the schema, Allocation,
+NodeSession, PodAttempt, ComponentAttempt, and generation. It atomically
+publishes the process gate, and the C++ Client enters the existing OpenSession
+only after that gate appears. Unmanaged execution does not require Infra
+admission and retains its existing behavior.
+
+The image healthcheck follows the same mode boundary: managed execution checks
+`/run/rl/readiness.json`, while unmanaged execution checks the existing
+`/tmp/rl-client-session-policy`. A managed Client can therefore report that it
+is connected and admissible while waiting for the topology-wide release; the
+healthcheck does not claim training participation.
+
 ## 3. View a local replay
 
 `evaluation` uses config's default replay port `9004`; Training does not start
@@ -75,17 +117,17 @@ http://127.0.0.1:9004/
 
 ## 4. Build the runtime image
 
-The runtime image accepts only clean source and a synchronized formal Contracts
-artifact. Run from the host:
+Build the current source with a project tag from the host:
 
 ```bash
-bash scripts/sync_contract_snapshot.sh
-bash build_image.sh
+RL_PROJECT_IMAGE_TAG=maze-tag-001 bash build_image.sh
 ```
 
-The build never consumes development artifacts or a development-container build
-tree. It prints the image reference derived from the current stack source
-identity.
+The build entrypoint does not compute source, image, or binary hashes and does
+not create a second stack identity. The Dockerfile compiles and packages the
+current Client, configuration, and component contract. A later tuning build may
+overwrite the same tag; the full image reference is
+`rl-training/maze-client:maze-tag-001`.
 
 ## 5. Remove the development container
 

@@ -41,16 +41,16 @@ COPY replay.sh /opt/rl/maze-client/replay.sh
 COPY scripts /opt/rl/maze-client/scripts
 COPY tools/viz_player /opt/rl/maze-client/tools/viz_player
 COPY proto/manifest.json /opt/rl/identity/contracts.json
-COPY _deps/identity/stack-source.json /opt/rl/identity/stack-source.json
 
 RUN chmod +x /opt/rl/maze-client/bin/maze_client \
     /opt/rl/maze-client/run.sh \
     /opt/rl/maze-client/replay.sh \
-    /opt/rl/maze-client/scripts/entrypoint.sh
+    /opt/rl/maze-client/scripts/entrypoint.sh \
+    /opt/rl/maze-client/scripts/healthcheck.sh
 
 WORKDIR /opt/rl/maze-client
 EXPOSE 9004
 HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
-    CMD ["test", "-s", "/tmp/rl-client-session-policy"]
+    CMD ["/opt/rl/maze-client/scripts/healthcheck.sh"]
 ENTRYPOINT ["/opt/rl/maze-client/scripts/entrypoint.sh"]
 CMD ["--config", "configs/client_config.yaml"]
