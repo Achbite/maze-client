@@ -53,6 +53,7 @@ if(BUILD_TESTING)
     add_executable(client_command_exchange_development_test
         tests/lifecycle_command_transaction_test.cpp
         src/grpc/grpc_client.cpp
+        src/env/maze_env.cpp
         ${PROTO_SOURCES}
     )
     target_include_directories(client_command_exchange_development_test PRIVATE
@@ -64,5 +65,6 @@ if(BUILD_TESTING)
     add_test(
         NAME client_command_exchange_development_contract
         COMMAND client_command_exchange_development_test
+            ${CMAKE_CURRENT_SOURCE_DIR}/maps/test/maze_117436372.json
     )
 endif()

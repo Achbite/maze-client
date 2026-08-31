@@ -7,7 +7,7 @@
 
 // ---- 运行参数（main 使用）----
 struct RunConfig {
-    // agent_num 由 AIServer EnvironmentRuntimeSpec 写入，不从本地配置读取。
+    // agent_num 由 AIServer OpenSession 写入，不从本地配置读取。
     int   agent_num     = 0;
     int   log_interval  = 100;
     std::string client_instance_id;

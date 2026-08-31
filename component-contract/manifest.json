@@ -22,16 +22,11 @@
     "token_path": "/run/rl/training-admission.v1.json",
     "schema_version": "rl.training-admission.v1"
   },
-  "compatibility": {
-    "package_version": "0.14.0",
-    "artifact_digest": ""
-  },
   "supported_maps": [
     {
       "map_id": "maze_117436372",
-      "canonical_sha256": "861e0bb22a8b9a2ed689527d080c65ec2c822367e985c49753e1be9cf3ca8ae9",
-      "registry": "maps/test",
-      "map_schema_version": "maze.map.v1"
+      "canonical_sha256": "da9198e61cbcf393fc9934fee0139c09645d3569c2ede1452984051f3b4168e3",
+      "registry": "maps/test"
     }
   ]
 }

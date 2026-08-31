@@ -1,6 +1,6 @@
 # Maze Client 只配置环境执行实例与通信入口。
-# Agent 数由 AIServer EnvironmentRuntimeSpec 分配；地图、Episode 时限和 workload
-# 由 AIServer session/task policy 分配。Client 不形成第二权威入口。
+# Agent 数、地图、Episode 时限和 workload 都由 AIServer OpenSession 分配。
+# Client 不形成第二权威入口。
 
 run:
   client_instance_id: "maze-client-0"       # Client 进程实例身份；同一生命周期内稳定
@@ -20,7 +20,7 @@ viz:
   server_port: 9004                           # 本地 Replay HTTP 端口
 
 # 未来 Infra 可通过白名单环境变量断言本 Pod 的 assignment；null 表示不断言。
-# 这些字段不决定真实任务，真实值始终来自 AIServer TaskSpec。
+# 这些字段不决定真实任务，真实值始终来自 AIServer OpenSession。
 expected:
   map_id: null
   map_sha256: null

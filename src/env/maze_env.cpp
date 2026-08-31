@@ -43,10 +43,9 @@ bool MazeEnv::Init(const ClientConfig& config) {
     walls_.clear();
     map_id_.clear();
     loaded_map_path_.clear();
-    map_format_version_ = 0;
     shortest_action_steps_ = -1;
     map_checksum_sha256_.clear();
-    action_rule_id_ = "maze.action.9-way.no-corner-cut.v1";
+    action_rule_id_ = "maze.action.9-way.no-corner-cut";
     has_authoritative_grid_ = false;
 
     if (!LoadMapFromFile(map_file_)) {
@@ -175,13 +174,12 @@ int MazeEnv::ComputeShortestActionSteps() const {
 }
 
 std::string MazeEnv::ComputeCanonicalChecksum() const {
-    if (map_format_version_ != 4 ||
-        action_rule_id_ != "maze.action.9-way.no-corner-cut.v1" ||
+    if (action_rule_id_ != "maze.action.9-way.no-corner-cut" ||
         GetGridSizeMicrounits() == 0) {
         return "";
     }
     std::vector<std::uint8_t> payload;
-    const std::string magic("rl.task.maze.map.v4\0", 20);
+    const std::string magic("rl.task.maze.map\0", 17);
     payload.insert(payload.end(), magic.begin(), magic.end());
     const auto append_u32 = [&](std::uint32_t value) {
         payload.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xffU));
@@ -192,7 +190,6 @@ std::string MazeEnv::ComputeCanonicalChecksum() const {
     const auto append_i32 = [&](std::int32_t value) {
         append_u32(static_cast<std::uint32_t>(value));
     };
-    append_u32(static_cast<std::uint32_t>(map_format_version_));
     append_u32(static_cast<std::uint32_t>(grid_cols_));
     append_u32(static_cast<std::uint32_t>(grid_rows_));
     append_u32(GetGridSizeMicrounits());
@@ -422,7 +419,6 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
                    : text.substr(begin + 1, end - begin - 1);
     };
 
-    map_format_version_ = static_cast<int>(findNumber(content, "version"));
     map_checksum_sha256_ = findString(content, "checksum_sha256");
     const int declared_shortest =
         static_cast<int>(findNumber(content, "shortest_action_steps"));
@@ -430,11 +426,11 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
     const std::string declared_action_rule =
         findString(content, "action_rule_id");
     if (!declared_action_rule.empty()) action_rule_id_ = declared_action_rule;
-    if (map_format_version_ != 4 ||
-        action_rule_id_ != "maze.action.9-way.no-corner-cut.v1" ||
+    if (content.find("\"version\"") != std::string::npos ||
+        action_rule_id_ != "maze.action.9-way.no-corner-cut" ||
         findString(content, "blocked_bitmap_encoding") !=
             "row-major-u8-0-open-1-blocked") {
-        LOG_WARN("MazeEnv", "地图不是受支持的 v4/action-rule/bitmap 格式");
+        LOG_WARN("MazeEnv", "地图不符合当前 canonical action/bitmap contract");
         return false;
     }
 
@@ -486,7 +482,7 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
         }
     }
 
-    // 解析 grid_size（v2 格式，覆盖配置值）
+    // 解析 grid_size（覆盖配置值）
     const double json_grid_size = findDouble(content, "grid_size");
     const double json_grid_size_microunits =
         std::round(json_grid_size * 1000000.0);

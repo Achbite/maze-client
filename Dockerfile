@@ -37,14 +37,15 @@ COPY configs /opt/rl/maze-client/configs
 COPY component-contract /opt/rl/component-contract
 COPY maps /opt/rl/maze-client/maps
 COPY run.sh /opt/rl/maze-client/run.sh
-COPY replay.sh /opt/rl/maze-client/replay.sh
+COPY run_replay.sh /opt/rl/maze-client/run_replay.sh
 COPY scripts /opt/rl/maze-client/scripts
 COPY tools/viz_player /opt/rl/maze-client/tools/viz_player
 COPY proto/manifest.json /opt/rl/identity/contracts.json
 
 RUN chmod +x /opt/rl/maze-client/bin/maze_client \
     /opt/rl/maze-client/run.sh \
-    /opt/rl/maze-client/replay.sh \
+    /opt/rl/maze-client/run_replay.sh \
+    /opt/rl/maze-client/scripts/replay_service.py \
     /opt/rl/maze-client/scripts/entrypoint.sh \
     /opt/rl/maze-client/scripts/healthcheck.sh
 

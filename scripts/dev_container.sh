@@ -15,7 +15,6 @@ ccache_dir="/var/cache/ccache"
 replay_host_port=9004
 replay_tunnel_socket="${TMPDIR:-/tmp}/rl-training-client-dev-9004.sock"
 colima_ssh_config="${RL_COLIMA_SSH_CONFIG:-${HOME}/.colima/_lima/colima/ssh.config}"
-replay_mode="${RL_REPLAY_MODE:-evaluation}"
 
 if [ -f "/.dockerenv" ]; then
     echo "make shell is a host-side Docker entrypoint; leave the component container first" >&2
@@ -57,15 +56,6 @@ PY
 }
 
 dev_input_digest="$(dev_image_input_digest)"
-
-case "${replay_mode}" in
-    evaluation)
-        ;;
-    *)
-        echo "invalid RL_REPLAY_MODE: ${replay_mode}" >&2
-        exit 2
-        ;;
-esac
 
 tcp_ready() {
     nc -z 127.0.0.1 "${replay_host_port}" >/dev/null 2>&1
@@ -271,15 +261,17 @@ case "${action}" in
         ;;
     replay)
         ensure_container
-        printf 'Replay URL: http://127.0.0.1:%s/\n' "${replay_host_port}"
         exec docker exec -it "${container_name}" bash -lc \
-            "cd /workspace/maze-client && exec bash ./replay.sh ${replay_mode}"
-        ;;
-    replay-start)
-        ensure_container
-        printf 'Replay URL: http://127.0.0.1:%s/\n' "${replay_host_port}"
+            "cd /workspace/maze-client && exec bash ./run_replay.sh"
         ;;
     replay-stop)
+        if docker container inspect "${container_name}" >/dev/null 2>&1 &&
+           [ "$(docker inspect --format '{{.State.Running}}' "${container_name}")" = "true" ]; then
+            docker exec "${container_name}" bash -lc \
+                "cd /workspace/maze-client && exec bash ./run_replay.sh -stop"
+        else
+            echo "[Replay] not running"
+        fi
         stop_replay_transport
         ;;
     clean)

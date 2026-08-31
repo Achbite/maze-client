@@ -59,15 +59,14 @@ make shell
 Client 不接受 workload 参数；实际模式由 AIServer 的 `OpenSession` 响应决定。
 `configs/client_config.yaml` 提供完整网络与 Replay 默认值；`--aiserver`、`--replay-dir`、
 `--replay-port` 只覆盖既有 `network.*`/`viz.*` 字段。相对目录相对所选 config 文件解析。
-`run.sh` 不解析这些业务参数，而是逐字节转发给 C++ 配置层；C++ 再把最终 Replay 目录和端口
-随 Session policy 交给监督器，因此记录器和 Replay HTTP 服务不会使用两套默认值。
-Training assignment 必须携带 lineage、显式 `model_step` 与模型/manifest digest；evaluation
-assignment 只携带模型文件 digest，不伪造训练 step 或 lineage。
+`run.sh` 不解析这些业务参数，而是逐字节转发给 C++ 配置层；Client 只消费这一个
+`OpenSession` 事实，不再生成本地 Session-policy 文件。Training 的行为模型由 AIServer
+按 Agent segment 绑定；evaluation assignment 只向 Client 携带模型文件 digest。
 
-Client 从 config 默认值或 `RL_ENV_MAP_REGISTRY_DIR` 覆盖的 registry 精确加载 TaskSpec 下发的
+Client 从 config 默认值或 `RL_ENV_MAP_REGISTRY_DIR` 覆盖的 registry 精确加载 `OpenSession` 下发的
 `<map_id>.json`；`RL_EXPECTED_TASK_MAP_ID/SHA256` 只覆盖 config 中默认是 `null` 的地图断言。
 Client 不再提供 Agent 数断言或覆盖；实际数量只来自 AIServer
-`OpenSessionRsp.EnvironmentRuntimeSpec.agent_count`。
+`OpenSessionRsp.environment.agent_count`。
 
 Infra managed 模式由 `RL_CONFIG_PATH` 标识。Client 连接配对 AIServer 后先发布
 `/run/rl/readiness.json`，随后等待 Node 写入当前 attempt 的
@@ -76,22 +75,39 @@ Infra managed 模式由 `RL_CONFIG_PATH` 标识。Client 连接配对 AIServer �
 ComponentAttempt 和 generation 校验，原子发布本进程使用的 gate；C++ Client 看到 gate 后才进入既有
 `OpenSession`。非 managed 模式不要求 Infra admission，行为保持不变。
 
-镜像 healthcheck 按同一个运行模式读取事实：managed 模式检查
-`/run/rl/readiness.json`，非 managed 模式检查既有 `/tmp/rl-client-session-policy`。因此 managed Client
-在等待整体训练放行时仍正确表示其“已连接、可被 Controller 放行”的 readiness，healthcheck 本身不伪造
-training participation。
+镜像 healthcheck 按运行模式检查事实：managed 模式检查 `/run/rl/readiness.json`，非 managed
+模式检查 Client 业务进程仍在运行。managed Client 在等待整体训练放行时仍正确表示其“已连接、
+可被 Controller 放行”的 readiness，healthcheck 本身不伪造 training participation。
 
 ## 3. 查看本地回放
 
-`evaluation` 默认使用 config 中的回放端口 `9004`，Training 不启动回放。
-evaluation 的 `validation-manifest.json` 只记录所用模型的 SHA-256，不写训练 step。
+`evaluation` 使用 Client config 中的目录记录回放帧；Training 不记录回放。Replay HTTP 服务是独立
+常驻工具，不参与 Client↔AIServer 协议，也不由 `run.sh` 自动启动。进入 Client 项目或开发容器后执行：
 
-Replay 由 `run.sh` 在收到 evaluation Session policy 后自动启动；`replay.sh` 只接受 C++
-effective config handoff 的目录和端口，不再提供独立隐藏默认值。
+```bash
+bash ./run_replay.sh
+```
 
-当前 evaluation 由 AIServer 下发一个 Episode。Episode 完成后 Client 业务进程正常退出，
-`run.sh` 继续保留 Replay HTTP 服务；按 `Ctrl-C` 后停止 Replay 并返回终端。该常驻状态不是
-Client 自动重启。
+脚本读取 `configs/client_config.yaml` 的 `viz.output_dir` 与 `viz.server_port`，确认 HTTP socket 已绑定后
+只输出一行启动回执并转入后台；服务详细日志写入 `log/replay-server.log`。它可以在 evaluation 前、期间或
+结束后随时启动，并持续监控同一回放目录。停止该实例：
+
+```bash
+bash ./run_replay.sh -stop
+```
+
+需要选择其他 Client config 或显式覆盖本次 Replay 目录、端口时使用同名参数：
+
+```bash
+bash ./run_replay.sh \
+  --config configs/client_config.yaml \
+  --replay-dir /absolute/path/to/viz \
+  --replay-port 9004
+```
+
+宿主机通过开发容器启动或停止同一个入口时，可分别使用 `make replay` 与 `make replay-stop`。当前
+evaluation 由 AIServer 下发一个 Episode；Client 完成后正常退出，后台 Replay 服务保持独立，直到
+显式执行 `-stop`。
 
 浏览器打开：
 

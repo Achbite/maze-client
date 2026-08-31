@@ -11,6 +11,11 @@ if [ "$#" -ne 0 ]; then
     exit 2
 fi
 
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
+python3 -m unittest -v \
+    tests.test_replay_service.ReplayServiceLifecycleTest.test_start_receipt_background_process_and_stop
+
 contract_cpp_dir=""
 if [ -n "${RL_CONTRACT_DEV_ARTIFACT_DIR:-}" ]; then
     contract_cpp_dir="${RL_CONTRACT_DEV_ARTIFACT_DIR}/cpp"
