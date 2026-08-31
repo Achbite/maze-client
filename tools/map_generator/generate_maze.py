@@ -128,7 +128,7 @@ ACTION_DIRECTIONS = [
     (0, 1), (1, 1), (1, 0), (1, -1),
     (0, -1), (-1, -1), (-1, 0), (-1, 1),
 ]
-ACTION_RULE_ID = "maze.action.9-way.no-corner-cut.v1"
+ACTION_RULE_ID = "maze.action.9-way.no-corner-cut"
 
 
 # ============================================================
@@ -577,7 +577,7 @@ def blocked_bitmap_bytes(blocked, grid_cols, grid_rows):
 def canonical_map_payload(grid_cols, grid_rows, grid_size,
                           start_gx, start_gy, goal_gx, goal_gy,
                           bitmap, action_rule_id=ACTION_RULE_ID):
-    """Return the selected cross-language canonical v4 byte stream."""
+    """Return the selected cross-language canonical byte stream."""
     import struct
 
     rule = action_rule_id.encode("utf-8")
@@ -586,8 +586,8 @@ def canonical_map_payload(grid_cols, grid_rows, grid_size,
         raise ValueError("grid_size does not fit grid_size_microunits")
     return b"".join(
         (
-            b"rl.task.maze.map.v4\0",
-            struct.pack(">IIII", 4, grid_cols, grid_rows,
+            b"rl.task.maze.map\0",
+            struct.pack(">III", grid_cols, grid_rows,
                         grid_size_microunits),
             struct.pack(">iiii", start_gx, start_gy, goal_gx, goal_gy),
             struct.pack(">I", len(bitmap)),
@@ -864,7 +864,6 @@ def generate_map(seed, grid_dim, grid_size, wall_thickness, extra_open_ratio,
     # 11. 组装地图数据。walls 仅供 Replay；blocked_bitmap 是碰撞事实源。
     map_data = {
         "map_id": f"maze_{seed}",
-        "version": 4,
         "seed": seed,
         "difficulty": 0,
         "grid_cols": out_dim,

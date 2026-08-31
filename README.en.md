@@ -67,18 +67,16 @@ loading a map, connecting to AIServer, or starting Replay.
 Client does not accept a workload argument. The actual mode comes from the AIServer `OpenSession` response.
 The config file provides complete network and Replay defaults. `--aiserver`,
 `--replay-dir`, and `--replay-port` only override existing `network.*` and
-`viz.*` fields. `run.sh` forwards arguments byte-for-byte; the C++ config layer
-publishes the final Replay directory and port back to the supervisor through
-the Session-policy handoff.
-Training assignments require lineage, an explicitly present `model_step`, and
-model/manifest digests. Evaluation assignments carry only the selected model
-file digest and never fabricate a training step or lineage.
+`viz.*` fields. `run.sh` forwards arguments byte-for-byte. Client consumes the
+single `OpenSession` fact and no longer publishes a local Session-policy file.
+AIServer binds the training behavior model per Agent segment; evaluation
+assignments expose only the selected model-file digest to Client.
 
-Client loads the TaskSpec-selected `<map_id>.json` exactly from the config
+Client loads the `OpenSession`-selected `<map_id>.json` exactly from the config
 default or `RL_ENV_MAP_REGISTRY_DIR`. The expected map/digest variables only
 override map assertions that default to `null`. Client has no Agent-count
 assertion or override; the actual count comes only from AIServer
-`OpenSessionRsp.EnvironmentRuntimeSpec.agent_count`.
+`OpenSessionRsp.environment.agent_count`.
 
 Infra managed mode is selected by `RL_CONFIG_PATH`. After connecting to its
 paired AIServer, Client first publishes `/run/rl/readiness.json` and waits for
@@ -90,24 +88,49 @@ publishes the process gate, and the C++ Client enters the existing OpenSession
 only after that gate appears. Unmanaged execution does not require Infra
 admission and retains its existing behavior.
 
-The image healthcheck follows the same mode boundary: managed execution checks
-`/run/rl/readiness.json`, while unmanaged execution checks the existing
-`/tmp/rl-client-session-policy`. A managed Client can therefore report that it
-is connected and admissible while waiting for the topology-wide release; the
-healthcheck does not claim training participation.
+The image healthcheck follows the mode boundary: managed execution checks
+`/run/rl/readiness.json`, while unmanaged execution checks that the Client
+business process is still running. A managed Client can therefore report that
+it is connected and admissible while waiting for the topology-wide release;
+the healthcheck does not claim training participation.
 
 ## 3. View a local replay
 
-`evaluation` uses config's default replay port `9004`; Training does not start
-replay. `run.sh` starts replay only after an evaluation Session policy, and the
-internal `replay.sh` has no independent directory or port fallback. The
-evaluation `validation-manifest.json` records only the model SHA-256, not a
-training step.
+`evaluation` records replay frames in the directory from the Client config;
+Training does not record replay. The Replay HTTP service is an independent,
+resident tool. It does not participate in the Client-AIServer protocol and is
+not launched by `run.sh`. From the Client checkout or development container,
+run:
 
-AIServer currently assigns one evaluation Episode. After it completes, the
-Client process exits normally while `run.sh` keeps the Replay HTTP service
-available. Press `Ctrl-C` to stop Replay and return to the shell. This persistent
-wrapper state is not a Client restart.
+```bash
+bash ./run_replay.sh
+```
+
+The script reads `viz.output_dir` and `viz.server_port` from
+`configs/client_config.yaml`. After proving that the HTTP socket is bound, it
+prints one startup receipt and continues in the background. Detailed service
+output is written to `log/replay-server.log`. It may be started before, during,
+or after evaluation and keeps monitoring the same replay directory. Stop the
+owned instance with:
+
+```bash
+bash ./run_replay.sh -stop
+```
+
+Select another Client config or override this Replay directory and port with
+the corresponding options:
+
+```bash
+bash ./run_replay.sh \
+  --config configs/client_config.yaml \
+  --replay-dir /absolute/path/to/viz \
+  --replay-port 9004
+```
+
+From the host, `make replay` and `make replay-stop` invoke the same entrypoint
+inside the development container. AIServer currently assigns one evaluation
+Episode. Client exits normally after it; the background Replay service remains
+independent until `-stop` is invoked explicitly.
 
 Open:
 

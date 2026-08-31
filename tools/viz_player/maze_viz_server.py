@@ -6,6 +6,9 @@ import glob
 import json
 import mimetypes
 import os
+from pathlib import Path
+import secrets
+import signal
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -16,6 +19,36 @@ from urllib.parse import parse_qs, urlparse
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_WEB_DIR = SCRIPT_DIR
 ENTRY_PAGE = "maze_viz.html"
+
+
+def write_ready_receipt(path, instance_id, replay_dir, host, port):
+    """Publish readiness only after the HTTP socket has bound successfully."""
+    ready_path = Path(path)
+    ready_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = ready_path.with_name(
+        f".{ready_path.name}.{secrets.token_hex(6)}.tmp"
+    )
+    payload = {
+        "schema_version": 1,
+        "source": "client-replay-ready",
+        "pid": os.getpid(),
+        "instance_id": instance_id,
+        "replay_dir": os.path.abspath(replay_dir),
+        "host": host,
+        "port": port,
+    }
+    try:
+        with temporary_path.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, ready_path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class VizReplayServer:
@@ -443,7 +476,7 @@ def main():
                         help='HTTP 监听地址（默认: 127.0.0.1）')
     parser.add_argument('--port', '-p', type=int, default=9004,
                         help='HTTP 服务端口（默认: 9004）')
-    parser.add_argument('--validation-id', default='legacy-local-validation',
+    parser.add_argument('--validation-id', default='local-validation',
                         help='本地模型验证任务 ID')
     parser.add_argument(
         '--mode',
@@ -452,7 +485,14 @@ def main():
     )
     parser.add_argument('--web-dir', default=DEFAULT_WEB_DIR,
                         help='本地验证页面静态文件目录')
+    parser.add_argument('--instance-id', default='',
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--ready-file', default='',
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if bool(args.instance_id) != bool(args.ready_file):
+        parser.error('--instance-id and --ready-file must be provided together')
 
     web_dir = os.path.abspath(args.web_dir)
     viz_server = VizReplayServer(args.dir, args.validation_id, args.mode)
@@ -465,17 +505,35 @@ def main():
         allow_reuse_address = True
 
     server = ThreadingHTTPServer((args.host, args.port), VizHTTPHandler)
-    print(
-        f"[VizServer] 本地验证回放服务已启动: "
-        f"http://{args.host}:{args.port}"
-    )
+    ready_file = Path(args.ready_file) if args.ready_file else None
 
+    def stop_server(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop_server)
     try:
+        if ready_file is not None:
+            write_ready_receipt(
+                ready_file,
+                args.instance_id,
+                viz_server.replay_dir,
+                args.host,
+                args.port,
+            )
+        print(
+            f"[VizServer] 本地验证回放服务已启动: "
+            f"http://{args.host}:{args.port}"
+        )
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n[VizServer] 服务已停止")
     finally:
         server.server_close()
+        if ready_file is not None:
+            try:
+                ready_file.unlink()
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == '__main__':

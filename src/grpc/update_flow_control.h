@@ -8,25 +8,17 @@ namespace maze_client {
 
 namespace task = rl::task::maze::v1;
 
-inline bool IsTrainingCapacityWait(
+inline bool IsUpdateWait(
     const task::UpdateRsp& response,
     std::uint64_t pending_sequence,
-    task::TaskState task_state,
-    task::SessionState session_state,
-    task::EpisodeState episode_state) {
-    const auto& reply = response.lifecycle();
-    return reply.ret_code() == 0 &&
-           reply.result() == task::LIFECYCLE_RESULT_WAIT &&
-           reply.error_code() == task::LIFECYCLE_ERROR_CODE_UNSPECIFIED &&
-           response.environment_control() ==
-               task::ENVIRONMENT_CONTROL_WAIT_FOR_TRAINING_CAPACITY &&
-           response.actions_size() == 0 &&
-           !response.task_stop_requested() &&
-           response.retry_after_ms() > 0 && pending_sequence >= 1 &&
+    task::SessionPhase phase) {
+    const auto& reply = response.reply();
+    return reply.result() == task::COMMAND_RESULT_WAIT &&
+           reply.error_code() == task::COMMAND_ERROR_CODE_UNSPECIFIED &&
+           response.has_wait() && response.wait().retry_after_ms() > 0 &&
+           pending_sequence >= 1 &&
            reply.applied_sequence() == pending_sequence - 1 &&
-           reply.task_state() == task_state &&
-           reply.session_state() == session_state &&
-           reply.episode_state() == episode_state;
+           reply.phase() == phase;
 }
 
 }  // namespace maze_client

@@ -84,7 +84,6 @@ public:
     int   GetStartGridY() const { return start_gy_; }
     int   GetGoalGridX() const { return end_gx_; }
     int   GetGoalGridY() const { return end_gy_; }
-    int   GetMapFormatVersion() const { return map_format_version_; }
     int   GetShortestActionSteps() const { return shortest_action_steps_; }
     const std::string& GetMapChecksum() const { return map_checksum_sha256_; }
     const std::string& GetActionRuleId() const { return action_rule_id_; }
@@ -128,7 +127,7 @@ private:
 
     // --- 网格参数 ---
     float grid_size_      = 500.0f;     // 网格大小 (cm)，支持浮点精度
-    std::uint32_t grid_size_microunits_ = 0;  // canonical v4 精确整数值
+    std::uint32_t grid_size_microunits_ = 0;  // canonical 精确整数值
     int   grid_cols_      = 0;          // 网格列数
     int   grid_rows_      = 0;          // 网格行数
     int   start_gx_       = 0;          // 起点网格 X
@@ -146,10 +145,9 @@ private:
     std::string map_file_;
     std::string map_id_;                // 当前地图 ID（来自 JSON 的 map_id 字段）
     std::string loaded_map_path_;       // 实际加载的地图文件完整路径
-    int map_format_version_ = 0;
     int shortest_action_steps_ = -1;
     std::string map_checksum_sha256_;
-    std::string action_rule_id_ = "maze.action.9-way.no-corner-cut.v1";
+    std::string action_rule_id_ = "maze.action.9-way.no-corner-cut";
     bool has_authoritative_grid_ = false;
 
     // 从 JSON 文件加载地图数据（墙壁、起终点、尺寸、grid_size、grid_count 等）

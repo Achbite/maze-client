@@ -11,8 +11,6 @@
 #include <sstream>
 #include <vector>
 
-extern char** environ;
-
 // ---- 去除字符串首尾空白 ----
 static std::string Trim(const std::string& s) {
     size_t start = s.find_first_not_of(" \t\r\n");
@@ -50,50 +48,6 @@ static bool IsLowerSha256(const std::string& value) {
         return (character >= '0' && character <= '9') ||
                (character >= 'a' && character <= 'f');
     });
-}
-
-static bool HasPrefix(const std::string& value, const char* prefix) {
-    return value.rfind(prefix, 0) == 0;
-}
-
-static bool ValidateComponentEnvironment(std::string& error) {
-    static const std::set<std::string> allowed = {
-        "RL_CLIENT_BIN",
-        "RL_ENV_MAP_REGISTRY_DIR",
-        "RL_EXPECTED_TASK_MAP_ID",
-        "RL_EXPECTED_TASK_MAP_SHA256",
-        "RL_REPLAY_BIN",
-        "RL_VALIDATION_ID",
-        "RL_VALIDATION_RESULT_PATH",
-    };
-    static const std::set<std::string> retired = {
-        "RL_AISERVER_HOST",
-        "RL_AISERVER_PORT",
-        "RL_CLIENT_INSTANCE_ID",
-        "RL_ENVIRONMENT_INSTANCE_ID",
-        "RL_EXPECTED_WORKLOAD",
-        "RL_REPLAY_PORT",
-        "RL_VIZ_INTERVAL",
-        "RL_VIZ_OUTPUT_DIR",
-    };
-    for (char** item = environ; item && *item; ++item) {
-        const std::string entry(*item);
-        const auto separator = entry.find('=');
-        const std::string name = entry.substr(0, separator);
-        if (allowed.count(name) != 0) continue;
-        if (retired.count(name) != 0 || name == "RL_RUN_ID" ||
-            name == "RL_POD_ATTEMPT_ID" || name == "RL_TASK_ID") {
-            error = "unknown component configuration environment: " + name;
-            return false;
-        }
-        if (HasPrefix(name, "RL_AISERVER_") ||
-            HasPrefix(name, "RL_TASK_") || HasPrefix(name, "RL_PPO_") ||
-            HasPrefix(name, "RL_EXPECTED_") || HasPrefix(name, "RL_ENV_")) {
-            LOG_WARN("Config", "ignoring unknown component environment: %s",
-                     name.c_str());
-        }
-    }
-    return true;
 }
 
 static bool ReadEnvironment(const char* name,
@@ -213,10 +167,6 @@ bool LoadClientConfig(const std::string& yaml_path,
     out_config = ClientConfig{};
     report = ClientConfigLoadReport{};
     error.clear();
-    if (!ValidateComponentEnvironment(error)) {
-        LOG_ERROR("Config", "%s", error.c_str());
-        return false;
-    }
 
     std::error_code fs_error;
     fs::path config_path = fs::absolute(fs::path(yaml_path), fs_error);

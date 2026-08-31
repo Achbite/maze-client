@@ -1,6 +1,5 @@
 #include "grpc/grpc_client.h"
 #include "grpc/lifecycle_command_transaction.h"
-#include "grpc/policy_binding_contract.h"
 #include "grpc/update_flow_control.h"
 #include "grpc/workload_contract.h"
 #include "env/maze_env.h"
@@ -35,7 +34,6 @@ using maze_client::AttachExecutedActionReceipt;
 using maze_client::FillCommand;
 using maze_client::IsConclusiveRejected;
 using maze_client::IsCommandWait;
-using maze_client::LifecycleAccepted;
 using maze_client::PrepareAppliedAgentUpdate;
 using maze_client::RecordExecutedAction;
 
@@ -44,16 +42,6 @@ constexpr const char* kManagedReadyMarker =
     "/run/rl/client-managed-ready";
 constexpr const char* kTrainingAdmittedMarker =
     "/run/rl/client-training-admitted";
-constexpr std::uint32_t kSessionProtocolVersion = 4;
-constexpr const char* kObservationSchemaId = "maze.observation.v3";
-constexpr std::uint32_t kObservationSchemaVersion = 1;
-constexpr const char* kObservationSchemaDigest =
-    "7cee41136020f3ffc8c6ae799f630d55d0588c6a99ab7f717eac3b3d08aa18b4";
-constexpr const char* kActionSchemaId = "maze.action.v1";
-constexpr std::uint32_t kActionSchemaVersion = 1;
-constexpr const char* kActionSchemaDigest =
-    "ce84c564e128f98adcc48fd420ac0df5acea61774a25de8705b602464009cfd8";
-constexpr const char* kPolicyDistributionSchema = "categorical.logits.v1";
 constexpr std::chrono::milliseconds kBeginWaitRetryInterval{100};
 
 void PrintUsage() {
@@ -156,60 +144,15 @@ bool TrainingAdmissionReady(std::string& error) {
     return true;
 }
 
-bool IsDigest(const common::ContentDigest& digest) {
-    return maze_client::IsSha256Digest(digest);
-}
-
 void SetSha256(common::ContentDigest* digest, const std::string& hex) {
     digest->set_algorithm(common::DIGEST_ALGORITHM_SHA256);
     digest->set_hex(hex);
-}
-
-void FillSchema(common::SchemaIdentity* schema,
-                const char* id,
-                std::uint32_t version,
-                const char* digest) {
-    schema->set_schema_id(id);
-    schema->set_schema_version(version);
-    SetSha256(schema->mutable_canonical_digest(), digest);
-}
-
-bool SameSchema(const common::SchemaIdentity& schema,
-                const char* id,
-                std::uint32_t version,
-                const char* digest) {
-    return schema.schema_id() == id &&
-           schema.schema_version() == version &&
-           schema.canonical_digest().algorithm() ==
-               common::DIGEST_ALGORITHM_SHA256 &&
-           schema.canonical_digest().hex() == digest;
-}
-
-bool ValidTaskIdentity(const maze::TaskIdentity& identity) {
-    return !identity.task_contract_id().empty() &&
-           identity.task_revision() > 0 &&
-           IsDigest(identity.task_config_digest()) &&
-           !identity.fixed_map_id().empty() &&
-           IsDigest(identity.fixed_map_digest());
-}
-
-bool SameTaskIdentity(const maze::TaskIdentity& lhs,
-                      const maze::TaskIdentity& rhs) {
-    return lhs.SerializeAsString() == rhs.SerializeAsString();
 }
 
 const char* WorkloadName(maze::WorkloadMode workload) {
     switch (workload) {
         case maze::WORKLOAD_MODE_TRAINING: return "training";
         case maze::WORKLOAD_MODE_EVALUATION: return "evaluation";
-        default: return "";
-    }
-}
-
-const char* ReplayPolicyName(maze::ReplayPolicy policy) {
-    switch (policy) {
-        case maze::REPLAY_POLICY_DISABLED: return "disabled";
-        case maze::REPLAY_POLICY_RECORD_AND_SERVE: return "record-and-serve";
         default: return "";
     }
 }
@@ -321,59 +264,6 @@ bool RenderEpisodeOutcome(const maze::EndEpisodeRsp& response,
     }
     output << ']';
     rendered = output.str();
-    return true;
-}
-
-bool PublishSessionPolicy(const std::string& workload,
-                          const std::string& replay_policy,
-                          const maze::BehaviorPolicyBinding& policy,
-                          const VizConfig& viz) {
-    namespace fs = std::filesystem;
-    const fs::path path("/tmp/rl-client-session-policy");
-    std::error_code error;
-    if (!path.parent_path().empty()) {
-        fs::create_directories(path.parent_path(), error);
-        if (error) return false;
-    }
-    const fs::path temporary =
-        path.string() + ".tmp." + std::to_string(::getpid());
-    const char* behavior_policy_scope = "none";
-    const char* model_identity_role = "not-applicable";
-    if (workload == "training") {
-        behavior_policy_scope = "training-agent-segment";
-        model_identity_role = "episode-start-snapshot";
-    } else if (workload == "evaluation") {
-        behavior_policy_scope = "evaluation-episode";
-        model_identity_role = "episode-pinned";
-    }
-    {
-        std::ofstream output(temporary);
-        if (!output) return false;
-        output << "workload=" << workload << "\n"
-               << "replay_policy=" << replay_policy << "\n"
-               << "behavior_policy_scope=" << behavior_policy_scope << "\n"
-               << "model_identity_role=" << model_identity_role << "\n"
-               << "replay_output_dir=" << viz.output_dir << "\n"
-               << "replay_server_port=" << viz.server_port << "\n"
-               << "model_artifact_digest="
-               << policy.model_artifact_digest().hex() << "\n";
-        if (workload == "training") {
-            output << "model_lineage_id=" << policy.model_lineage_id() << "\n"
-                   << "model_step=" << policy.model_step() << "\n"
-                   << "model_manifest_digest="
-                   << policy.model_manifest_digest().hex() << "\n";
-        }
-        output.flush();
-        if (!output) {
-            fs::remove(temporary, error);
-            return false;
-        }
-    }
-    fs::rename(temporary, path, error);
-    if (error) {
-        fs::remove(temporary, error);
-        return false;
-    }
     return true;
 }
 
@@ -587,72 +477,51 @@ int main(int argc, char* argv[]) {
     client_identity->set_lifecycle_epoch(1);
     open_request.set_environment_instance_id(
         config.run.environment_instance_id);
-    open_request.add_supported_session_protocol_versions(
-        kSessionProtocolVersion);
-    FillSchema(open_request.add_supported_observation_schemas(),
-               kObservationSchemaId, kObservationSchemaVersion,
-               kObservationSchemaDigest);
-    FillSchema(open_request.add_supported_action_schemas(),
-               kActionSchemaId, kActionSchemaVersion,
-               kActionSchemaDigest);
-    open_request.set_idempotency_key(
+    open_request.set_request_id(
         config.run.client_instance_id + ":" + std::to_string(::getpid()) +
         ":open-session");
 
     maze::OpenSessionRsp open_response;
     if (!client.OpenSession(open_request, open_response) ||
-        !LifecycleAccepted(open_response.lifecycle()) ||
-        open_response.session_protocol_version() != kSessionProtocolVersion ||
+        !maze_client::CommandAccepted(open_response.reply()) ||
+        open_response.reply().applied_sequence() != 0 ||
+        open_response.reply().phase() != maze::SESSION_PHASE_OPEN ||
         open_response.session_id().empty() ||
-        open_response.lifecycle_epoch() == 0 ||
+        open_response.session_epoch() == 0 ||
         open_response.aiserver().component() != "rl-aiserver" ||
         open_response.aiserver().instance_id().empty() ||
-        !ValidTaskIdentity(open_response.task_spec().identity()) ||
-        !open_response.has_environment_runtime() ||
-        open_response.environment_runtime().agent_count() == 0 ||
-        open_response.task_spec().fixed_map_id() !=
-            open_response.task_spec().identity().fixed_map_id() ||
-        open_response.task_spec().expected_map_digest().SerializeAsString() !=
-            open_response.task_spec().identity().fixed_map_digest().SerializeAsString() ||
-        !SameSchema(open_response.task_spec().observation_schema(),
-                    kObservationSchemaId, kObservationSchemaVersion,
-                    kObservationSchemaDigest) ||
-        !SameSchema(open_response.task_spec().action_schema(),
-                    kActionSchemaId, kActionSchemaVersion,
-                    kActionSchemaDigest) ||
-        open_response.task_spec().action_rule_id() !=
-            "maze.action.9-way.no-corner-cut.v1" ||
-        open_response.task_spec().episode_max_steps() == 0) {
-        LOG_ERROR("Main", "OpenSession 返回了无效的 0.14.0 任务或 Environment 身份");
+        !open_response.has_environment() ||
+        open_response.environment().agent_count() == 0 ||
+        open_response.environment().map_id().empty() ||
+        !maze_client::IsSha256Digest(
+            open_response.environment().expected_map_digest()) ||
+        open_response.environment().action_rule_id() !=
+            "maze.action.9-way.no-corner-cut" ||
+        open_response.environment().episode_max_steps() == 0) {
+        LOG_ERROR("Main", "OpenSession 返回了无效的 Environment 身份");
         Logger::Instance().Close();
         return 1;
     }
 
     const std::string workload = WorkloadName(open_response.workload_mode());
-    const std::string replay_policy =
-        ReplayPolicyName(open_response.replay_policy());
     const bool replay_expected =
         open_response.workload_mode() == maze::WORKLOAD_MODE_EVALUATION;
-    if (workload.empty() || replay_policy.empty() ||
-        replay_expected !=
-            (open_response.replay_policy() ==
-             maze::REPLAY_POLICY_RECORD_AND_SERVE)) {
-        LOG_ERROR("Main", "OpenSession workload 与 Replay policy 无效");
+    if (workload.empty()) {
+        LOG_ERROR("Main", "OpenSession workload 无效");
         Logger::Instance().Close();
         return 1;
     }
     maze_client::LifecycleCursor cursor;
-    cursor.task.CopyFrom(open_response.task_spec().identity());
     cursor.session_id = open_response.session_id();
-    cursor.lifecycle_epoch = open_response.lifecycle_epoch();
-    maze_client::UpdateCursor(cursor, open_response.lifecycle());
+    cursor.session_epoch = open_response.session_epoch();
+    maze_client::UpdateCursor(cursor, open_response.reply());
 
     const bool assignment_mismatch =
         (config.expected.map_id.has_value() &&
-         open_response.task_spec().fixed_map_id() !=
+         open_response.environment().map_id() !=
              *config.expected.map_id) ||
         (config.expected.map_sha256.has_value() &&
-         open_response.task_spec().expected_map_digest().hex() !=
+         open_response.environment().expected_map_digest().hex() !=
              *config.expected.map_sha256);
     if (assignment_mismatch) {
         LOG_ERROR(
@@ -663,48 +532,47 @@ int main(int argc, char* argv[]) {
             workload.c_str(),
             config.expected.map_id.has_value()
                 ? config.expected.map_id->c_str() : "<none>",
-            open_response.task_spec().fixed_map_id().c_str(),
+            open_response.environment().map_id().c_str(),
             config.expected.map_sha256.has_value()
                 ? config.expected.map_sha256->c_str() : "<none>",
-            open_response.task_spec().expected_map_digest().hex().c_str());
+            open_response.environment().expected_map_digest().hex().c_str());
         maze::CloseSessionReq close_request;
-        FillCommand(cursor, "close-assignment-mismatch",
-                    close_request.mutable_command());
+        FillCommand(cursor, close_request.mutable_command());
         maze::CloseSessionRsp close_response;
         const bool close_rpc_ok =
             client.CloseSession(close_request, close_response);
         const bool close_applied =
             close_rpc_ok &&
-            AcceptCommandReply(cursor, close_response.lifecycle());
+            AcceptCommandReply(cursor, close_response.reply());
         if (!close_applied) {
             LOG_ERROR(
                 "Main",
                 "assignment mismatch CloseSession 未收敛: seq=%llu "
                 "applied=%llu outcome_unknown=%d message=%s",
                 static_cast<unsigned long long>(
-                    close_request.command().command_sequence()),
+                    close_request.command().sequence()),
                 static_cast<unsigned long long>(
-                    close_response.lifecycle().applied_sequence()),
+                    close_response.reply().applied_sequence()),
                 (!close_rpc_ok
                      ? client.LastRpcOutcomeUnknown()
                      : !IsConclusiveRejected(
-                           cursor, close_response.lifecycle()))
+                           cursor, close_response.reply()))
                     ? 1
                     : 0,
-                close_response.lifecycle().message().c_str());
+                close_response.reply().message().c_str());
         }
         client.Disconnect();
         Logger::Instance().Close();
         return 1;
     }
     config.run.agent_num =
-        static_cast<int>(open_response.environment_runtime().agent_count());
+        static_cast<int>(open_response.environment().agent_count());
     config.run.workload = workload;
     config.viz.recording_enabled = replay_expected;
 
     const std::string map_file = ResolveTaskMapFile(
         config.env.map_registry_dir,
-        open_response.task_spec().fixed_map_id());
+        open_response.environment().map_id());
     if (map_file.empty()) {
         LOG_ERROR("Main", "TaskSpec 地图未在 registry 精确命中");
         Logger::Instance().Close();
@@ -713,19 +581,18 @@ int main(int argc, char* argv[]) {
     config.env.map_file = map_file;
     MazeEnv environment;
     if (!environment.Init(config) ||
-        environment.GetMapId() != open_response.task_spec().fixed_map_id() ||
+        environment.GetMapId() != open_response.environment().map_id() ||
         environment.GetMapChecksum() !=
-            open_response.task_spec().expected_map_digest().hex()) {
+            open_response.environment().expected_map_digest().hex()) {
         LOG_ERROR("Main", "Client 地图 canonical 身份不匹配");
         Logger::Instance().Close();
         return 1;
     }
 
     maze::InitReq init_request;
-    FillCommand(cursor, "init", init_request.mutable_command());
+    FillCommand(cursor, init_request.mutable_command());
     auto* map = init_request.mutable_map();
     map->set_map_id(environment.GetMapId());
-    map->set_format_version(environment.GetMapFormatVersion());
     map->set_grid_columns(environment.GetGridCols());
     map->set_grid_rows(environment.GetGridRows());
     map->set_grid_size_microunits(environment.GetGridSizeMicrounits());
@@ -742,7 +609,7 @@ int main(int argc, char* argv[]) {
     const bool init_rpc_ok = client.Init(init_request, init_response);
     const bool init_applied =
         init_rpc_ok &&
-        AcceptCommandReply(cursor, init_response.lifecycle());
+        AcceptCommandReply(cursor, init_response.reply());
     const bool init_payload_valid =
         init_applied &&
         init_response.accepted_map_digest().SerializeAsString() ==
@@ -755,42 +622,41 @@ int main(int argc, char* argv[]) {
                 ? client.LastRpcOutcomeUnknown()
                 : !init_applied &&
                       !IsConclusiveRejected(cursor,
-                                            init_response.lifecycle());
+                                            init_response.reply());
         LOG_ERROR(
             "Main",
             "Init 地图验证未收敛: seq=%llu applied=%llu "
             "outcome_unknown=%d message=%s",
             static_cast<unsigned long long>(
-                init_request.command().command_sequence()),
+                init_request.command().sequence()),
             static_cast<unsigned long long>(
-                init_response.lifecycle().applied_sequence()),
+                init_response.reply().applied_sequence()),
             init_outcome_unknown ? 1 : 0,
-            init_response.lifecycle().message().c_str());
+            init_response.reply().message().c_str());
         if (!init_outcome_unknown) {
             maze::CloseSessionReq close_request;
-            FillCommand(cursor, "close-after-init-failure",
-                        close_request.mutable_command());
+            FillCommand(cursor, close_request.mutable_command());
             maze::CloseSessionRsp close_response;
             const bool close_rpc_ok =
                 client.CloseSession(close_request, close_response);
             if (!close_rpc_ok ||
                 !AcceptCommandReply(cursor,
-                                    close_response.lifecycle())) {
+                                    close_response.reply())) {
                 const bool close_outcome_unknown =
                     !close_rpc_ok
                         ? client.LastRpcOutcomeUnknown()
                         : !IsConclusiveRejected(
-                              cursor, close_response.lifecycle());
+                              cursor, close_response.reply());
                 LOG_ERROR(
                     "Main",
                     "Init 失败后的 CloseSession 未收敛: seq=%llu "
                     "applied=%llu outcome_unknown=%d message=%s",
                     static_cast<unsigned long long>(
-                        close_request.command().command_sequence()),
+                        close_request.command().sequence()),
                     static_cast<unsigned long long>(
-                        close_response.lifecycle().applied_sequence()),
+                        close_response.reply().applied_sequence()),
                     close_outcome_unknown ? 1 : 0,
-                    close_response.lifecycle().message().c_str());
+                    close_response.reply().message().c_str());
             }
         }
         client.Disconnect();
@@ -800,7 +666,6 @@ int main(int argc, char* argv[]) {
 
     bool chain_failed = false;
     bool lifecycle_outcome_unknown = false;
-    bool session_policy_published = false;
     bool episode_active = false;
     int episode_number = 0;
     VizRecorder recorder;
@@ -808,7 +673,7 @@ int main(int argc, char* argv[]) {
     while (!g_stop_requested.load()) {
         cursor.episode_id.clear();
         maze::BeginEpisodeReq begin_request;
-        FillCommand(cursor, "begin-episode", begin_request.mutable_command());
+        FillCommand(cursor, begin_request.mutable_command());
         maze::BeginEpisodeRsp begin_response;
         bool begin_applied = false;
         while (!g_stop_requested.load()) {
@@ -821,33 +686,33 @@ int main(int argc, char* argv[]) {
                 LOG_ERROR(
                     "Main",
                     "BeginEpisode RPC 未收敛: seq=%llu "
-                    "outcome_unknown=%d",
+                        "outcome_unknown=%d",
                     static_cast<unsigned long long>(
-                        begin_request.command().command_sequence()),
+                        begin_request.command().sequence()),
                     lifecycle_outcome_unknown ? 1 : 0);
                 chain_failed = true;
                 break;
             }
-            if (IsCommandWait(cursor, begin_response.lifecycle())) {
+            if (IsCommandWait(cursor, begin_response.reply())) {
                 std::this_thread::sleep_for(kBeginWaitRetryInterval);
                 continue;
             }
             begin_applied =
-                AcceptCommandReply(cursor, begin_response.lifecycle());
+                AcceptCommandReply(cursor, begin_response.reply());
             if (!begin_applied) {
                 lifecycle_outcome_unknown =
                     !IsConclusiveRejected(cursor,
-                                          begin_response.lifecycle());
+                                          begin_response.reply());
                 LOG_ERROR(
                     "Main",
                     "BeginEpisode 生命周期未收敛: seq=%llu applied=%llu "
                     "outcome_unknown=%d message=%s",
                     static_cast<unsigned long long>(
-                        begin_request.command().command_sequence()),
+                        begin_request.command().sequence()),
                     static_cast<unsigned long long>(
-                        begin_response.lifecycle().applied_sequence()),
+                        begin_response.reply().applied_sequence()),
                     lifecycle_outcome_unknown ? 1 : 0,
-                    begin_response.lifecycle().message().c_str());
+                    begin_response.reply().message().c_str());
                 chain_failed = true;
             }
             break;
@@ -855,13 +720,21 @@ int main(int argc, char* argv[]) {
         if (!begin_applied) {
             break;
         }
-        const auto& assignment = begin_response.assignment();
-        if (!assignment.continue_task()) {
+        if (begin_response.has_task_complete()) {
+            if (cursor.phase != maze::SESSION_PHASE_TASK_COMPLETE) {
+                LOG_ERROR("Main", "BeginEpisode task-complete phase 无效");
+                chain_failed = true;
+            }
             LOG_INFO("Main", "AIServer 已结束固定地图任务");
             break;
         }
-        if (cursor.session_state == maze::SESSION_STATE_EPISODE_ACTIVE &&
-            cursor.episode_state == maze::EPISODE_STATE_RUNNING) {
+        if (!begin_response.has_assignment()) {
+            LOG_ERROR("Main", "BeginEpisode 缺少 assignment/task_complete");
+            chain_failed = true;
+            break;
+        }
+        const auto& assignment = begin_response.assignment();
+        if (cursor.phase == maze::SESSION_PHASE_EPISODE_RUNNING) {
             cursor.episode_id = assignment.episode_id();
             episode_active = !cursor.episode_id.empty();
         }
@@ -870,17 +743,11 @@ int main(int argc, char* argv[]) {
             assignment.mode() == maze::EPISODE_MODE_TRAINING;
         const bool evaluation_assignment =
             assignment.mode() == maze::EPISODE_MODE_EVALUATION;
-        if (cursor.session_state != maze::SESSION_STATE_EPISODE_ACTIVE ||
-            cursor.episode_state != maze::EPISODE_STATE_RUNNING ||
+        if (cursor.phase != maze::SESSION_PHASE_EPISODE_RUNNING ||
             assignment.episode_id().empty() ||
-            !SameTaskIdentity(assignment.task(), cursor.task) ||
             mode.empty() ||
             assignment.max_steps() !=
-                open_response.task_spec().episode_max_steps() ||
-            !maze_client::PolicyBindingMatchesWorkload(
-                open_response.workload_mode(), assignment.behavior_policy(),
-                kPolicyDistributionSchema) ||
-            assignment.collect_training_samples() != training_assignment ||
+                open_response.environment().episode_max_steps() ||
             (!training_assignment && !evaluation_assignment) ||
             !maze_client::AssignmentMatchesWorkload(
                 open_response.workload_mode(), assignment)) {
@@ -889,17 +756,6 @@ int main(int argc, char* argv[]) {
             chain_failed = true;
             break;
         }
-        if (!session_policy_published) {
-            if (!PublishSessionPolicy(workload, replay_policy,
-                                      assignment.behavior_policy(),
-                                      config.viz)) {
-                LOG_ERROR("Main", "无法发布已协商 Session policy");
-                chain_failed = true;
-                break;
-            }
-            session_policy_published = true;
-        }
-
         environment.SetMaxSteps(static_cast<int>(assignment.max_steps()));
         environment.Reset();
         std::vector<int> last_actions(config.run.agent_num, 0);
@@ -916,27 +772,23 @@ int main(int argc, char* argv[]) {
         if (training_assignment) {
             LOG_INFO(
                 "Main",
-                "Episode %s 开始 mode=%s max_steps=%u start_model_step=%llu "
-                "policy_scope=agent-segment",
+                "Episode %s 开始 mode=%s max_steps=%u",
                 cursor.episode_id.c_str(), mode.c_str(),
-                assignment.max_steps(),
-                static_cast<unsigned long long>(
-                    assignment.behavior_policy().model_step()));
+                assignment.max_steps());
         } else {
             LOG_INFO(
                 "Main",
-                "Episode %s 开始 mode=%s max_steps=%u pinned_model_sha=%s "
-                "policy_scope=episode digest_only=1",
+                "Episode %s 开始 mode=%s max_steps=%u "
+                "evaluation_model_sha=%s",
                 cursor.episode_id.c_str(), mode.c_str(),
                 assignment.max_steps(),
-                assignment.behavior_policy()
-                    .model_artifact_digest().hex().c_str());
+                assignment.evaluation_model_artifact_digest().hex().c_str());
         }
 
         while (!g_stop_requested.load()) {
             const bool terminal_report = environment.AllDone();
             maze::UpdateReq update_request;
-            FillCommand(cursor, "update", update_request.mutable_command());
+            FillCommand(cursor, update_request.mutable_command());
             update_request.set_frame_id(environment.GetFrameId());
             for (int index = 0; index < environment.GetAgentNum(); ++index) {
                 if (agent_execution[static_cast<std::size_t>(index)].retired) {
@@ -979,62 +831,54 @@ int main(int argc, char* argv[]) {
                         "Main",
                         "Update RPC 失败: seq=%llu outcome_unknown=%d",
                         static_cast<unsigned long long>(
-                            update_request.command().command_sequence()),
+                            update_request.command().sequence()),
                         lifecycle_outcome_unknown ? 1 : 0);
                     chain_failed = true;
                     break;
                 }
-                if (update_response.environment_control() ==
-                    maze::ENVIRONMENT_CONTROL_WAIT_FOR_TRAINING_CAPACITY) {
-                    if (!maze_client::IsTrainingCapacityWait(
+                if (update_response.has_wait()) {
+                    if (!maze_client::IsUpdateWait(
                             update_response, cursor.next_sequence,
-                            cursor.task_state, cursor.session_state,
-                            cursor.episode_state)) {
+                            cursor.phase)) {
                         LOG_ERROR("Main", "Update WAIT 响应无效");
                         lifecycle_outcome_unknown = true;
                         chain_failed = true;
                         break;
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(
-                        update_response.retry_after_ms()));
+                        update_response.wait().retry_after_ms()));
                     continue;
                 }
                 std::vector<AgentExecutionCursor> candidate_execution;
                 bool valid_update = false;
-                if (update_response.environment_control() ==
-                    maze::ENVIRONMENT_CONTROL_ADVANCE) {
-                    if (update_response.task_stop_requested()) {
-                        valid_update = AcceptCommandReply(
-                            cursor, update_response.lifecycle());
-                    } else if (PrepareAppliedAgentUpdate(
-                                   update_request, update_response,
-                                   agent_execution, candidate_execution) &&
-                               AcceptCommandReply(
-                                   cursor, update_response.lifecycle())) {
-                        agent_execution = std::move(candidate_execution);
-                        valid_update = true;
-                    }
+                if (update_response.has_stop()) {
+                    valid_update = AcceptCommandReply(
+                        cursor, update_response.reply());
+                } else if (PrepareAppliedAgentUpdate(
+                               update_request, update_response,
+                               agent_execution, candidate_execution) &&
+                           AcceptCommandReply(
+                               cursor, update_response.reply())) {
+                    agent_execution = std::move(candidate_execution);
+                    valid_update = true;
                 }
                 if (!valid_update) {
-                    const auto& reply = update_response.lifecycle();
+                    const auto& reply = update_response.reply();
                     LOG_ERROR(
                         "Main",
-                        "Update 生命周期响应无效: frame=%llu control=%d "
-                        "ret=%d result=%d error=%d applied=%llu "
-                        "task=%d session=%d episode=%d "
-                        "actions=%d message=%s",
+                        "Update 生命周期响应无效: frame=%llu result=%d "
+                        "error=%d applied=%llu phase=%d actions=%d "
+                        "message=%s",
                         static_cast<unsigned long long>(
                             update_request.frame_id()),
-                        static_cast<int>(
-                            update_response.environment_control()),
-                        reply.ret_code(), static_cast<int>(reply.result()),
+                        static_cast<int>(reply.result()),
                         static_cast<int>(reply.error_code()),
                         static_cast<unsigned long long>(
                             reply.applied_sequence()),
-                        static_cast<int>(reply.task_state()),
-                        static_cast<int>(reply.session_state()),
-                        static_cast<int>(reply.episode_state()),
-                        update_response.actions_size(),
+                        static_cast<int>(reply.phase()),
+                        update_response.has_action_batch()
+                            ? update_response.action_batch().actions_size()
+                            : 0,
                         reply.message().c_str());
                     if (!IsConclusiveRejected(cursor, reply)) {
                         lifecycle_outcome_unknown = true;
@@ -1044,17 +888,15 @@ int main(int argc, char* argv[]) {
                 break;
             }
             if (chain_failed || g_stop_requested.load()) break;
-            if (update_response.task_stop_requested()) {
-                if (update_response.task_stop_reason() !=
-                        maze::MAZE_TERMINATION_REASON_TASK_STOP ||
-                    update_response.actions_size() != 0) {
+            if (update_response.has_stop()) {
+                if (update_response.stop().reason() !=
+                    maze::MAZE_TERMINATION_REASON_TASK_STOP) {
                     LOG_ERROR("Main", "AIServer 任务停止响应无效");
                     chain_failed = true;
                     break;
                 }
                 maze::AbortEpisodeReq abort_request;
-                FillCommand(cursor, "abort-task-stop",
-                            abort_request.mutable_command());
+                FillCommand(cursor, abort_request.mutable_command());
                 abort_request.set_reason(
                     maze::MAZE_TERMINATION_REASON_TASK_STOP);
                 abort_request.set_message("AIServer requested task stop");
@@ -1064,26 +906,27 @@ int main(int argc, char* argv[]) {
                 const bool abort_applied =
                     abort_rpc_ok &&
                     AcceptCommandReply(cursor,
-                                       abort_response.lifecycle());
+                                       abort_response.reply());
                 if (!abort_applied) {
                     lifecycle_outcome_unknown =
                         !abort_rpc_ok
                             ? client.LastRpcOutcomeUnknown()
                             : !IsConclusiveRejected(
-                                  cursor, abort_response.lifecycle());
+                                  cursor, abort_response.reply());
                     LOG_ERROR(
                         "Main",
                         "AbortEpisode(task-stop) 未收敛: seq=%llu "
                         "applied=%llu outcome_unknown=%d message=%s",
                         static_cast<unsigned long long>(
-                            abort_request.command().command_sequence()),
+                            abort_request.command().sequence()),
                         static_cast<unsigned long long>(
-                            abort_response.lifecycle().applied_sequence()),
+                            abort_response.reply().applied_sequence()),
                         lifecycle_outcome_unknown ? 1 : 0,
-                        abort_response.lifecycle().message().c_str());
+                        abort_response.reply().message().c_str());
                     chain_failed = true;
                 } else {
                     episode_active = false;
+                    cursor.episode_id.clear();
                 }
                 break;
             }
@@ -1094,15 +937,19 @@ int main(int argc, char* argv[]) {
                 result_frame_id % config.run.log_interval == 0;
             std::ostringstream grouped_actions;
             bool first_grouped_action = true;
-            for (const auto& action : update_response.actions()) {
+            for (const auto& action :
+                 update_response.action_batch().actions()) {
                 const int agent_id = static_cast<int>(action.agent_id());
                 const auto before = environment.GetAgent(agent_id);
                 std::string step_error;
-                if (!environment.Step(agent_id, action.action_id(),
-                                      step_error)) {
+                if (!ExecuteAssignedAction(
+                        environment,
+                        agent_execution[static_cast<std::size_t>(agent_id)],
+                        action,
+                        step_error)) {
                     LOG_ERROR(
                         "Main",
-                        "MazeEnv Step 拒绝动作: episode=%s frame=%d "
+                        "Client 动作执行链拒绝动作: episode=%s frame=%d "
                         "agent_id=%d action_id=%d error=%s",
                         cursor.episode_id.c_str(), action_frame_id,
                         agent_id, action.action_id(), step_error.c_str());
@@ -1110,17 +957,6 @@ int main(int argc, char* argv[]) {
                     break;
                 }
                 const auto& after = environment.GetAgent(agent_id);
-                if (!RecordExecutedAction(
-                        agent_execution[static_cast<std::size_t>(agent_id)],
-                        action.action_id())) {
-                    LOG_ERROR(
-                        "Main",
-                        "Agent 动作执行状态无法提交: frame=%d agent_id=%d "
-                        "action_id=%d",
-                        action_frame_id, agent_id, action.action_id());
-                    chain_failed = true;
-                    break;
-                }
                 last_actions[agent_id] = action.action_id();
                 LOG_FILE(
                     "Frame",
@@ -1183,8 +1019,7 @@ int main(int argc, char* argv[]) {
         if (chain_failed) {
             if (episode_active && !lifecycle_outcome_unknown) {
                 maze::AbortEpisodeReq abort_request;
-                FillCommand(cursor, "abort-chain-failure",
-                            abort_request.mutable_command());
+                FillCommand(cursor, abort_request.mutable_command());
                 abort_request.set_reason(
                     maze::MAZE_TERMINATION_REASON_CHAIN_FAILURE);
                 abort_request.set_message(
@@ -1194,32 +1029,32 @@ int main(int argc, char* argv[]) {
                     client.AbortEpisode(abort_request, abort_response);
                 if (abort_rpc_ok &&
                     AcceptCommandReply(cursor,
-                                       abort_response.lifecycle())) {
+                                       abort_response.reply())) {
                     episode_active = false;
+                    cursor.episode_id.clear();
                 } else {
                     lifecycle_outcome_unknown =
                         !abort_rpc_ok
                             ? client.LastRpcOutcomeUnknown()
                             : !IsConclusiveRejected(
-                                  cursor, abort_response.lifecycle());
+                                  cursor, abort_response.reply());
                     LOG_ERROR(
                         "Main",
                         "AbortEpisode(chain-failure) 未收敛: seq=%llu "
                         "applied=%llu outcome_unknown=%d message=%s",
                         static_cast<unsigned long long>(
-                            abort_request.command().command_sequence()),
+                            abort_request.command().sequence()),
                         static_cast<unsigned long long>(
-                            abort_response.lifecycle().applied_sequence()),
+                            abort_response.reply().applied_sequence()),
                         lifecycle_outcome_unknown ? 1 : 0,
-                        abort_response.lifecycle().message().c_str());
+                        abort_response.reply().message().c_str());
                 }
             }
             break;
         }
         if (g_stop_requested.load() && episode_active) {
             maze::AbortEpisodeReq abort_request;
-            FillCommand(cursor, "abort-client-stop",
-                        abort_request.mutable_command());
+            FillCommand(cursor, abort_request.mutable_command());
             abort_request.set_reason(
                 maze::MAZE_TERMINATION_REASON_CLIENT_ABORT);
             abort_request.set_message("Client received stop signal");
@@ -1227,48 +1062,49 @@ int main(int argc, char* argv[]) {
             const bool abort_rpc_ok =
                 client.AbortEpisode(abort_request, abort_response);
             if (!abort_rpc_ok ||
-                !AcceptCommandReply(cursor, abort_response.lifecycle())) {
+                !AcceptCommandReply(cursor, abort_response.reply())) {
                 lifecycle_outcome_unknown =
                     !abort_rpc_ok
                         ? client.LastRpcOutcomeUnknown()
                         : !IsConclusiveRejected(
-                              cursor, abort_response.lifecycle());
+                              cursor, abort_response.reply());
                 LOG_ERROR(
                     "Main",
                     "AbortEpisode(client-stop) 未收敛: seq=%llu "
                     "applied=%llu outcome_unknown=%d message=%s",
                     static_cast<unsigned long long>(
-                        abort_request.command().command_sequence()),
+                        abort_request.command().sequence()),
                     static_cast<unsigned long long>(
-                        abort_response.lifecycle().applied_sequence()),
+                        abort_response.reply().applied_sequence()),
                     lifecycle_outcome_unknown ? 1 : 0,
-                    abort_response.lifecycle().message().c_str());
+                    abort_response.reply().message().c_str());
                 chain_failed = true;
             } else {
                 episode_active = false;
+                cursor.episode_id.clear();
             }
             break;
         }
         if (!episode_active) break;
 
         maze::EndEpisodeReq end_request;
-        FillCommand(cursor, "end-episode", end_request.mutable_command());
+        FillCommand(cursor, end_request.mutable_command());
         maze::EndEpisodeRsp end_response;
         if (!client.EndEpisode(end_request, end_response) ||
-            !AcceptCommandReply(cursor, end_response.lifecycle())) {
+            !AcceptCommandReply(cursor, end_response.reply())) {
             lifecycle_outcome_unknown =
                 client.LastRpcOutcomeUnknown() ||
-                !IsConclusiveRejected(cursor, end_response.lifecycle());
+                !IsConclusiveRejected(cursor, end_response.reply());
             LOG_ERROR(
                 "Main",
                 "EndEpisode 生命周期未收敛: seq=%llu applied=%llu "
                 "outcome_unknown=%d message=%s",
                 static_cast<unsigned long long>(
-                    end_request.command().command_sequence()),
+                    end_request.command().sequence()),
                 static_cast<unsigned long long>(
-                    end_response.lifecycle().applied_sequence()),
+                    end_response.reply().applied_sequence()),
                 lifecycle_outcome_unknown ? 1 : 0,
-                end_response.lifecycle().message().c_str());
+                end_response.reply().message().c_str());
             chain_failed = true;
             break;
         }
@@ -1283,15 +1119,16 @@ int main(int argc, char* argv[]) {
             break;
         }
         LOG_INFO("Outcome", "%s", outcome_log.c_str());
+        cursor.episode_id.clear();
         ++episode_number;
     }
 
     if (!episode_active && !lifecycle_outcome_unknown) {
         maze::CloseSessionReq close_request;
-        FillCommand(cursor, "close-session", close_request.mutable_command());
+        FillCommand(cursor, close_request.mutable_command());
         maze::CloseSessionRsp close_response;
         if (!client.CloseSession(close_request, close_response) ||
-            !AcceptCommandReply(cursor, close_response.lifecycle())) {
+            !AcceptCommandReply(cursor, close_response.reply())) {
             LOG_ERROR("Main", "CloseSession 生命周期未收敛");
             chain_failed = true;
         }
