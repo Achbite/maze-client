@@ -19,7 +19,7 @@
     "schema_version": "rl.component-readiness.v1"
   },
   "training_admission": {
-    "token_path": "/run/rl/training-admission.v1.json",
+    "token_path": "/run/rl/training-admission.json",
     "schema_version": "rl.training-admission.v1"
   },
   "supported_maps": [

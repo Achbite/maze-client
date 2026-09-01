@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -23,8 +24,6 @@
 #include <utility>
 #include <vector>
 #include <unistd.h>
-
-namespace common = rl::common::v1;
 
 namespace {
 
@@ -43,6 +42,8 @@ constexpr const char* kManagedReadyMarker =
 constexpr const char* kTrainingAdmittedMarker =
     "/run/rl/client-training-admitted";
 constexpr std::chrono::milliseconds kBeginWaitRetryInterval{100};
+constexpr const char* kTaskProtocolId = "rl.task.maze";
+constexpr std::uint32_t kTaskProtocolVersion = 1;
 
 void PrintUsage() {
     std::fputs(
@@ -74,7 +75,8 @@ void HandleSignal(int) { g_stop_requested.store(true); }
 
 bool PublishManagedReadyMarker(const std::string& aiserver_alias,
                                std::string& error) {
-    if (std::getenv("RL_CONFIG_PATH") == nullptr) return true;
+    const char* managed = std::getenv("RL_INFRA_MANAGED");
+    if (managed == nullptr || std::string(managed) != "true") return true;
     namespace fs = std::filesystem;
     std::error_code filesystem_error;
     const fs::path destination(kManagedReadyMarker);
@@ -111,7 +113,8 @@ bool PublishManagedReadyMarker(const std::string& aiserver_alias,
 }
 
 void RemoveManagedReadyMarker() {
-    if (std::getenv("RL_CONFIG_PATH") == nullptr) return;
+    const char* managed = std::getenv("RL_INFRA_MANAGED");
+    if (managed == nullptr || std::string(managed) != "true") return;
     std::error_code ignored;
     std::filesystem::remove(kManagedReadyMarker, ignored);
 }
@@ -142,11 +145,6 @@ bool TrainingAdmissionReady(std::string& error) {
         return false;
     }
     return true;
-}
-
-void SetSha256(common::ContentDigest* digest, const std::string& hex) {
-    digest->set_algorithm(common::DIGEST_ALGORITHM_SHA256);
-    digest->set_hex(hex);
 }
 
 const char* WorkloadName(maze::WorkloadMode workload) {
@@ -432,7 +430,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    if (std::getenv("RL_CONFIG_PATH") != nullptr) {
+    const char* managed = std::getenv("RL_INFRA_MANAGED");
+    if (managed != nullptr && std::string(managed) == "true") {
         std::string readiness_error;
         if (!PublishManagedReadyMarker(config.network.server_host,
                                        readiness_error)) {
@@ -480,6 +479,9 @@ int main(int argc, char* argv[]) {
     open_request.set_request_id(
         config.run.client_instance_id + ":" + std::to_string(::getpid()) +
         ":open-session");
+    open_request.mutable_task_protocol()->set_protocol_id(kTaskProtocolId);
+    open_request.mutable_task_protocol()->set_protocol_version(
+        kTaskProtocolVersion);
 
     maze::OpenSessionRsp open_response;
     if (!client.OpenSession(open_request, open_response) ||
@@ -490,14 +492,17 @@ int main(int argc, char* argv[]) {
         open_response.session_epoch() == 0 ||
         open_response.aiserver().component() != "rl-aiserver" ||
         open_response.aiserver().instance_id().empty() ||
+        open_response.task_protocol().protocol_id() != kTaskProtocolId ||
+        open_response.task_protocol().protocol_version() !=
+            kTaskProtocolVersion ||
         !open_response.has_environment() ||
         open_response.environment().agent_count() == 0 ||
         open_response.environment().map_id().empty() ||
-        !maze_client::IsSha256Digest(
-            open_response.environment().expected_map_digest()) ||
-        open_response.environment().action_rule_id() !=
-            "maze.action.9-way.no-corner-cut" ||
-        open_response.environment().episode_max_steps() == 0) {
+        open_response.environment().episode_max_steps() == 0 ||
+        (open_response.environment().action_mask_mode() !=
+             maze::ACTION_MASK_MODE_DISABLED &&
+         open_response.environment().action_mask_mode() !=
+             maze::ACTION_MASK_MODE_REQUIRED)) {
         LOG_ERROR("Main", "OpenSession 返回了无效的 Environment 身份");
         Logger::Instance().Close();
         return 1;
@@ -516,55 +521,6 @@ int main(int argc, char* argv[]) {
     cursor.session_epoch = open_response.session_epoch();
     maze_client::UpdateCursor(cursor, open_response.reply());
 
-    const bool assignment_mismatch =
-        (config.expected.map_id.has_value() &&
-         open_response.environment().map_id() !=
-             *config.expected.map_id) ||
-        (config.expected.map_sha256.has_value() &&
-         open_response.environment().expected_map_digest().hex() !=
-             *config.expected.map_sha256);
-    if (assignment_mismatch) {
-        LOG_ERROR(
-            "Main",
-            "OpenSession assignment mismatch: workload=%s "
-            "expected_map=%s actual_map=%s "
-            "expected_digest=%s actual_digest=%s",
-            workload.c_str(),
-            config.expected.map_id.has_value()
-                ? config.expected.map_id->c_str() : "<none>",
-            open_response.environment().map_id().c_str(),
-            config.expected.map_sha256.has_value()
-                ? config.expected.map_sha256->c_str() : "<none>",
-            open_response.environment().expected_map_digest().hex().c_str());
-        maze::CloseSessionReq close_request;
-        FillCommand(cursor, close_request.mutable_command());
-        maze::CloseSessionRsp close_response;
-        const bool close_rpc_ok =
-            client.CloseSession(close_request, close_response);
-        const bool close_applied =
-            close_rpc_ok &&
-            AcceptCommandReply(cursor, close_response.reply());
-        if (!close_applied) {
-            LOG_ERROR(
-                "Main",
-                "assignment mismatch CloseSession 未收敛: seq=%llu "
-                "applied=%llu outcome_unknown=%d message=%s",
-                static_cast<unsigned long long>(
-                    close_request.command().sequence()),
-                static_cast<unsigned long long>(
-                    close_response.reply().applied_sequence()),
-                (!close_rpc_ok
-                     ? client.LastRpcOutcomeUnknown()
-                     : !IsConclusiveRejected(
-                           cursor, close_response.reply()))
-                    ? 1
-                    : 0,
-                close_response.reply().message().c_str());
-        }
-        client.Disconnect();
-        Logger::Instance().Close();
-        return 1;
-    }
     config.run.agent_num =
         static_cast<int>(open_response.environment().agent_count());
     config.run.workload = workload;
@@ -581,10 +537,8 @@ int main(int argc, char* argv[]) {
     config.env.map_file = map_file;
     MazeEnv environment;
     if (!environment.Init(config) ||
-        environment.GetMapId() != open_response.environment().map_id() ||
-        environment.GetMapChecksum() !=
-            open_response.environment().expected_map_digest().hex()) {
-        LOG_ERROR("Main", "Client 地图 canonical 身份不匹配");
+        environment.GetMapId() != open_response.environment().map_id()) {
+        LOG_ERROR("Main", "Client 地图 registry 身份不匹配");
         Logger::Instance().Close();
         return 1;
     }
@@ -601,21 +555,13 @@ int main(int argc, char* argv[]) {
     map->set_goal_grid_x(environment.GetGoalGridX());
     map->set_goal_grid_y(environment.GetGoalGridY());
     map->set_blocked_bitmap(environment.GetBlockedBitmap());
-    SetSha256(map->mutable_canonical_digest(), environment.GetMapChecksum());
-    map->set_shortest_action_steps(environment.GetShortestActionSteps());
-    map->set_action_rule_id(environment.GetActionRuleId());
 
     maze::InitRsp init_response;
     const bool init_rpc_ok = client.Init(init_request, init_response);
     const bool init_applied =
         init_rpc_ok &&
         AcceptCommandReply(cursor, init_response.reply());
-    const bool init_payload_valid =
-        init_applied &&
-        init_response.accepted_map_digest().SerializeAsString() ==
-            map->canonical_digest().SerializeAsString() &&
-        init_response.verified_shortest_action_steps() ==
-            environment.GetShortestActionSteps();
+    const bool init_payload_valid = init_applied;
     if (!init_payload_valid) {
         const bool init_outcome_unknown =
             !init_rpc_ok
@@ -769,21 +715,11 @@ int main(int argc, char* argv[]) {
             chain_failed = true;
             break;
         }
-        if (training_assignment) {
-            LOG_INFO(
-                "Main",
-                "Episode %s 开始 mode=%s max_steps=%u",
-                cursor.episode_id.c_str(), mode.c_str(),
-                assignment.max_steps());
-        } else {
-            LOG_INFO(
-                "Main",
-                "Episode %s 开始 mode=%s max_steps=%u "
-                "evaluation_model_sha=%s",
-                cursor.episode_id.c_str(), mode.c_str(),
-                assignment.max_steps(),
-                assignment.evaluation_model_artifact_digest().hex().c_str());
-        }
+        LOG_INFO(
+            "Main",
+            "Episode %s 开始 mode=%s max_steps=%u",
+            cursor.episode_id.c_str(), mode.c_str(),
+            assignment.max_steps());
 
         while (!g_stop_requested.load()) {
             const bool terminal_report = environment.AllDone();
@@ -805,6 +741,14 @@ int main(int argc, char* argv[]) {
                 state->set_termination_reason(
                     ToProtoTerminationReason(agent.termination_reason));
                 state->set_last_move_blocked(agent.last_move_blocked);
+                if (!agent.done &&
+                    open_response.environment().action_mask_mode() ==
+                        maze::ACTION_MASK_MODE_REQUIRED) {
+                    const auto action_mask = environment.GetActionMask(index);
+                    for (const bool available : action_mask) {
+                        state->add_action_mask(available);
+                    }
+                }
                 if (!AttachExecutedActionReceipt(
                         update_request.frame_id(),
                         agent_execution[static_cast<std::size_t>(index)],

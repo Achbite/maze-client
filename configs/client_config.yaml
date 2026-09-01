@@ -18,9 +18,3 @@ viz:
   output_dir: "../log/viz"                   # Replay 帧记录目录，相对所选 config
   interval: 1                                 # Replay 记录间隔，单位 frame
   server_port: 9004                           # 本地 Replay HTTP 端口
-
-# 未来 Infra 可通过白名单环境变量断言本 Pod 的 assignment；null 表示不断言。
-# 这些字段不决定真实任务，真实值始终来自 AIServer OpenSession。
-expected:
-  map_id: null
-  map_sha256: null

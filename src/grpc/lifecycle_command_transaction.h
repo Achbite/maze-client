@@ -113,7 +113,8 @@ inline bool AttachExecutedActionReceipt(
         !IsMazeActionId(*cursor.last_executed_action_id)) {
         return false;
     }
-    state->set_executed_action_id(*cursor.last_executed_action_id);
+    state->set_executed_action_id(
+        static_cast<task::MazeAction>(*cursor.last_executed_action_id));
     return true;
 }
 
@@ -196,6 +197,18 @@ inline bool PrepareAppliedAgentUpdate(
                 expected_actions.end() ||
             !returned.insert(action.agent_id()).second) {
             return false;
+        }
+        for (const auto& state : request.agents()) {
+            if (state.agent_id() != action.agent_id() ||
+                state.action_mask_size() == 0) {
+                continue;
+            }
+            const auto action_index = static_cast<int>(action.action_id());
+            if (action_index >= state.action_mask_size() ||
+                !state.action_mask(action_index)) {
+                return false;
+            }
+            break;
         }
     }
 

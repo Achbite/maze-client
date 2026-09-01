@@ -7,9 +7,11 @@ start it after Learner and AIServer are ready. Evaluation requires only AIServer
 to be started first.
 
 Local training runs only three containers: Learner, AIServer, and Client.
-`make shell` is a host command that prepares development artifacts from sibling
-source repositories; it does not download those repositories. A fresh workspace
-therefore needs at least these sibling directories:
+`make shell` is a host command. When `client-dev` is absent it builds the
+development image and creates and starts the container. When the container
+exists, it starts it only if needed and enters it directly. It never synchronizes
+or replaces this checkout's `proto/`. A complete three-container workspace has
+these sibling directories:
 
 ```text
 workspace/
@@ -21,9 +23,10 @@ workspace/
   maze-client/
 ```
 
-The first three repositories supply development artifacts only and do not add
-runtime containers. See [rl-framework](https://github.com/Achbite/rl-framework)
-for the complete three-container startup order.
+The first three repositories add no runtime container. Sample Pool and Model
+Distributor are staged only into Learner. `rl-contracts` changes the Client and
+AIServer Maze Task Proto only through an explicit protocol-sync command. See
+[rl-framework](https://github.com/Achbite/rl-framework) for the startup order.
 
 ## 1. Development container, incremental build, and tests
 
@@ -37,13 +40,19 @@ bash ./test.sh
 
 # The host can also reuse the same container for a build
 make build
+
+# Explicitly refresh after Dockerfile.dev, toolchain, port, environment, or mount changes
+make dev-refresh
 ```
 
 The development image does not inherit an old runtime image and uses persistent
 ccache. `ninja: no work to do.` does not automatically run tests. Tests may be
 started only from the repository root with `bash ./test.sh`; `build.sh`, Docker
 image builds, and other wrappers do not run them implicitly. Run `make shell`
-only on the host.
+only on the host. `make dev-image` rebuilds only the image and never replaces an
+existing container. `make dev-refresh` rebuilds the image and recreates the
+container. It refuses while Client, Replay, tests, or a build are active; stop
+Replay with `make replay-stop` first.
 
 ## 2. Start Client
 
@@ -70,19 +79,26 @@ The config file provides complete network and Replay defaults. `--aiserver`,
 `viz.*` fields. `run.sh` forwards arguments byte-for-byte. Client consumes the
 single `OpenSession` fact and no longer publishes a local Session-policy file.
 AIServer binds the training behavior model per Agent segment; evaluation
-assignments expose only the selected model-file digest to Client.
+models are also pinned internally by AIServer, so Client neither receives nor
+validates model identity.
 
 Client loads the `OpenSession`-selected `<map_id>.json` exactly from the config
-default or `RL_ENV_MAP_REGISTRY_DIR`. The expected map/digest variables only
-override map assertions that default to `null`. Client has no Agent-count
-assertion or override; the actual count comes only from AIServer
-`OpenSessionRsp.environment.agent_count`.
+default or `RL_ENV_MAP_REGISTRY_DIR`. The cross-team protocol sends only
+`map_id`; map-file content, its self-described checksum, grid validity, and
+reachability belong to Client's environment-load boundary and are not echoed to
+AIServer as a second proof. Client has no Agent-count assertion or override; the
+actual count comes only from AIServer `OpenSessionRsp.environment.agent_count`.
+
+`OpenSessionRsp.environment.action_mask_mode` explicitly selects `disabled` or
+`required`. When disabled, `AgentState.action_mask` must be empty. When required,
+Client reports only the actions executable in the current environment and does
+not infer AIServer policy or Learner training behavior.
 
 Infra managed mode is selected by `RL_CONFIG_PATH`. After connecting to its
 paired AIServer, Client first publishes `/run/rl/readiness.json` and waits for
-the owning Node to write `/run/rl/training-admission.v1.json` for the current
+the owning Node to write `/run/rl/training-admission.json` for the current
 attempt. `run.sh` validates that token exactly against
-`/run/rl/execution-identity.v1.json`, including the schema, Allocation,
+`/run/rl/execution-identity.json`, including the schema, Allocation,
 NodeSession, PodAttempt, ComponentAttempt, and generation. It atomically
 publishes the process gate, and the C++ Client enters the existing OpenSession
 only after that gate appears. Unmanaged execution does not require Infra
@@ -99,8 +115,7 @@ the healthcheck does not claim training participation.
 `evaluation` records replay frames in the directory from the Client config;
 Training does not record replay. The Replay HTTP service is an independent,
 resident tool. It does not participate in the Client-AIServer protocol and is
-not launched by `run.sh`. From the Client checkout or development container,
-run:
+not launched by `run.sh`. From inside the Client development container, run:
 
 ```bash
 bash ./run_replay.sh
@@ -128,7 +143,8 @@ bash ./run_replay.sh \
 ```
 
 From the host, `make replay` and `make replay-stop` invoke the same entrypoint
-inside the development container. AIServer currently assigns one evaluation
+inside the development container. Do not start another host-side 9004 service
+that competes with the container port forwarding. AIServer currently assigns one evaluation
 Episode. Client exits normally after it; the background Replay service remains
 independent until `-stop` is invoked explicitly.
 
@@ -140,7 +156,16 @@ http://127.0.0.1:9004/
 
 ## 4. Build the runtime image
 
-Build the current source with a project tag from the host:
+The runtime image compiles the repository-local `proto/`. Normal builds do not
+read the Contracts repository or compare Client/AIServer source, generator,
+hash, or platform identity. Only when intentionally adopting the current Maze
+release should you run the Framework command and review this repository's diff:
+
+```bash
+(cd ../rl-framework && bash sync_maze_protocol.sh)
+```
+
+Then build the current source with a project tag from the host:
 
 ```bash
 RL_PROJECT_IMAGE_TAG=maze-tag-001 bash build_image.sh
@@ -152,11 +177,16 @@ current Client, configuration, and component contract. A later tuning build may
 overwrite the same tag; the full image reference is
 `rl-training/maze-client:maze-tag-001`.
 
-## 5. Remove the development container
+## 5. Refresh or remove the development container
 
 ```bash
+make dev-refresh
 make dev-clean
 ```
+
+`dev-refresh` preserves source and the ccache volume while replacing the
+development image/container environment. `dev-clean` removes the development
+container. Neither command synchronizes protocols.
 
 ## License
 

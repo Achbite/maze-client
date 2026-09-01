@@ -68,6 +68,7 @@ public:
     int   GetFrameId() const;                             // 当前帧号
     bool  AllDone() const;                                // 所有 Agent 是否都已结束
     int   GetAgentNum() const;                             // Agent 数量
+    std::vector<bool> GetActionMask(int agent_id) const;   // Client-owned exact availability
 
     // 地图参数
     float GetMapWidth()  const { return map_width_; }
@@ -84,9 +85,6 @@ public:
     int   GetStartGridY() const { return start_gy_; }
     int   GetGoalGridX() const { return end_gx_; }
     int   GetGoalGridY() const { return end_gy_; }
-    int   GetShortestActionSteps() const { return shortest_action_steps_; }
-    const std::string& GetMapChecksum() const { return map_checksum_sha256_; }
-    const std::string& GetActionRuleId() const { return action_rule_id_; }
     std::string GetBlockedBitmap() const;
 
     // 网格坐标 → 连续坐标（网格中心，用于可视化和通信）
@@ -156,6 +154,7 @@ private:
     // 终止判定
     bool CheckGoalReached(const AgentInfo& agent) const;  // 是否到达终点网格
     bool CheckTimeout() const;                             // 是否超时
+    bool IsActionAvailable(const AgentInfo& agent, int action_id) const;
     int ComputeShortestActionSteps() const;
     std::string ComputeCanonicalChecksum() const;
 };

@@ -8,17 +8,36 @@ if [ -x "${repo_dir}/bin/maze_client" ]; then
     default_client_bin="${repo_dir}/bin/maze_client"
 fi
 client_bin="${RL_CLIENT_BIN:-${default_client_bin}}"
-training_admission_path="/run/rl/training-admission.v1.json"
-execution_identity_path="/run/rl/execution-identity.v1.json"
+training_admission_path="/run/rl/training-admission.json"
+execution_identity_path="/run/rl/execution-identity.json"
 training_admitted_marker="/run/rl/client-training-admitted"
 managed=0
-if [ -n "${RL_CONFIG_PATH:-}" ]; then
+if [ "${RL_INFRA_MANAGED:-}" = "true" ]; then
     managed=1
-    if [[ "${RL_CONFIG_PATH}" != /* ]]; then
-        echo "RL_CONFIG_PATH must be absolute" >&2
-        exit 2
-    fi
     rm -f /run/rl/readiness.json /run/rl/client-managed-ready "${training_admitted_marker}"
+elif [ -n "${RL_INFRA_MANAGED:-}" ]; then
+    echo "RL_INFRA_MANAGED must be exactly true when supplied" >&2
+    exit 2
+fi
+
+runtime_arguments=("$@")
+if [ "${managed}" -eq 1 ]; then
+    required_platform_values=(
+        RL_INFRA_ENDPOINT_AISERVER_TASK_HOST
+        RL_INFRA_ENDPOINT_AISERVER_TASK_PORT
+        RL_INFRA_DATA_ROOT
+        RL_INFRA_POD_ID
+    )
+    for name in "${required_platform_values[@]}"; do
+        if [ -z "${!name:-}" ]; then
+            echo "Client managed runtime fact is missing: ${name}" >&2
+            exit 2
+        fi
+    done
+    runtime_arguments+=(
+        --aiserver "${RL_INFRA_ENDPOINT_AISERVER_TASK_HOST}:${RL_INFRA_ENDPOINT_AISERVER_TASK_PORT}"
+        --replay-dir "${RL_INFRA_DATA_ROOT}/client/viz"
+    )
 fi
 
 if [ ! -x "${client_bin}" ]; then
@@ -80,7 +99,7 @@ trap shutdown EXIT
 trap on_signal TERM INT
 
 cd "${repo_dir}"
-"${client_bin}" "$@" &
+"${client_bin}" "${runtime_arguments[@]}" &
 client_pid=$!
 
 if [ "${managed}" -eq 1 ]; then
@@ -100,13 +119,12 @@ if [ "${managed}" -eq 1 ]; then
         exit 1
     fi
     aiserver_alias="$(awk 'index($0, "aiserver_alias=") == 1 { print substr($0, 16); exit }' /run/rl/client-managed-ready)"
-    if [[ ! "${aiserver_alias}" =~ ^aiserver-[0-9]+$ ]]; then
+    if [ "${aiserver_alias}" != "${RL_INFRA_ENDPOINT_AISERVER_TASK_HOST}" ]; then
         echo "Client managed AIServer alias is invalid" >&2
         exit 1
     fi
     python3 scripts/publish_readiness.py \
-        --component maze-client \
-        --config "${RL_CONFIG_PATH}" \
+        --component client \
         --fact grpc_transport=connected \
         --fact aiserver_alias="${aiserver_alias}"
 

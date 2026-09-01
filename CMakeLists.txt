@@ -16,12 +16,7 @@ set(SHARED_SOURCES
     src/viz/viz_recorder.cpp
 )
 
-set(CONTRACT_CPP_DIR "" CACHE PATH "Generated C++ contract directory")
-if(CONTRACT_CPP_DIR)
-    set(PROTO_GEN_DIR ${CONTRACT_CPP_DIR})
-else()
-    set(PROTO_GEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
-endif()
+set(PROTO_GEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
 set(PROTO_SOURCES
     ${PROTO_GEN_DIR}/common.pb.cc
     ${PROTO_GEN_DIR}/maze_task.pb.cc
