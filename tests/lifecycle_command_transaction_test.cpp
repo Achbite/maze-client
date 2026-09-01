@@ -32,7 +32,7 @@ public:
         reply->set_phase(maze::SESSION_PHASE_EPISODE_RUNNING);
         auto* action = response->mutable_action_batch()->add_actions();
         action->set_agent_id(0);
-        action->set_action_id(2);
+        action->set_action_id(maze::MAZE_ACTION_UP_RIGHT);
         return grpc::Status::OK;
     }
 

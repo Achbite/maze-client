@@ -44,11 +44,6 @@ struct VizConfig {
     int         server_port = 9004;              // 可视化 HTTP 服务端口，浏览器通过此端口访问回放
 };
 
-struct ExpectedAssignmentConfig {
-    std::optional<std::string> map_id;
-    std::optional<std::string> map_sha256;
-};
-
 struct ClientConfigOverrides {
     std::optional<std::string> server_host;
     std::optional<int> server_port;
@@ -62,7 +57,6 @@ struct ClientConfig {
     EnvConfig     env;
     NetworkConfig network;
     VizConfig     viz;
-    ExpectedAssignmentConfig expected;
 };
 
 struct ClientConfigLoadReport {

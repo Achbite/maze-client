@@ -1,12 +1,12 @@
 # Maze Contract Snapshot
 
-This directory is the staging location for the selected `rl-contracts 0.15.0`
-Maze protocol and its generated C++ bindings. Maze Client compiles these
-repository-local files directly and does not mount or discover an external
-Contracts artifact.
+This directory owns the Maze protocol sources and generated C++ bindings used
+by this Client checkout. Maze Client always compiles these repository-local
+files and never discovers or mounts an external Contracts artifact.
 
-`manifest.json` records the release identity and SHA-256 values required by the
-image build. Run `../scripts/sync_contract_snapshot.sh` to synchronize the
-explicit version and platform selected in `artifact_versions.env`. The build
-does not update this snapshot and rejects any byte that differs from the
-selected artifact.
+`manifest.json` records only the local task protocol identity and required build
+inputs. Run `../scripts/sync_contract_snapshot.sh` only when you explicitly
+choose to replace the checkout with the Maze release selected in
+`artifact_versions.env`. Normal builds and `make shell` never run that command,
+and no source, generator, hash, or platform equality gates Client/AIServer
+communication.

@@ -1,4 +1,4 @@
-.PHONY: shell build replay replay-stop dev-clean dev-image
+.PHONY: shell build replay replay-stop dev-clean dev-image dev-refresh
 
 shell:
 	@bash scripts/dev_container.sh shell
@@ -17,3 +17,6 @@ dev-clean:
 
 dev-image:
 	@bash scripts/dev_container.sh image
+
+dev-refresh:
+	@bash scripts/dev_container.sh refresh

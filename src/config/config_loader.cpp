@@ -42,14 +42,6 @@ static int SafeInt(const std::string& val, int def) {
     }
 }
 
-static bool IsLowerSha256(const std::string& value) {
-    if (value.size() != 64) return false;
-    return std::all_of(value.begin(), value.end(), [](char character) {
-        return (character >= '0' && character <= '9') ||
-               (character >= 'a' && character <= 'f');
-    });
-}
-
 static bool ReadEnvironment(const char* name,
                             std::optional<std::string>& value,
                             std::string& error) {
@@ -217,8 +209,6 @@ bool LoadClientConfig(const std::string& yaml_path,
         "viz.output_dir",
         "viz.interval",
         "viz.server_port",
-        "expected.map_id",
-        "expected.map_sha256",
     };
     for (const auto& entry : entries) {
         const std::string field = entry.section + "." + entry.key;
@@ -238,8 +228,6 @@ bool LoadClientConfig(const std::string& yaml_path,
         {"viz", "output_dir"},
         {"viz", "interval"},
         {"viz", "server_port"},
-        {"expected", "map_id"},
-        {"expected", "map_sha256"},
     };
     for (const auto& field : required) {
         if (FindValue(entries, field.first, field.second).empty()) {
@@ -277,16 +265,6 @@ bool LoadClientConfig(const std::string& yaml_path,
     out_config.viz.interval    = SafeInt(FindValue(entries, "viz", "interval"), 1);
     out_config.viz.server_port = SafeInt(FindValue(entries, "viz", "server_port"), 9004);
 
-    const std::string configured_map_id =
-        FindValue(entries, "expected", "map_id");
-    if (configured_map_id != "null") {
-        out_config.expected.map_id = configured_map_id;
-    }
-    const std::string configured_map_sha256 =
-        FindValue(entries, "expected", "map_sha256");
-    if (configured_map_sha256 != "null") {
-        out_config.expected.map_sha256 = configured_map_sha256;
-    }
     const auto record_override = [&](const char* field) {
         report.environment_overridden_fields.emplace_back(field);
     };
@@ -308,25 +286,18 @@ bool LoadClientConfig(const std::string& yaml_path,
         return false;
     }
 
-    std::optional<std::string> expected_string;
-    if (!ReadEnvironment("RL_EXPECTED_TASK_MAP_ID", expected_string, error)) {
+    std::optional<std::string> platform_pod_id;
+    if (!ReadEnvironment("RL_INFRA_POD_ID", platform_pod_id, error)) {
         LOG_ERROR("Config", "%s", error.c_str());
         return false;
     }
-    if (expected_string.has_value()) {
-        out_config.expected.map_id = *expected_string;
-        record_override("expected.map_id");
+    if (platform_pod_id.has_value()) {
+        out_config.run.client_instance_id = *platform_pod_id + "-client";
+        out_config.run.environment_instance_id = *platform_pod_id + "-env";
+        record_override("run.client_instance_id");
+        record_override("run.environment_instance_id");
     }
-    expected_string.reset();
-    if (!ReadEnvironment("RL_EXPECTED_TASK_MAP_SHA256", expected_string,
-                         error)) {
-        LOG_ERROR("Config", "%s", error.c_str());
-        return false;
-    }
-    if (expected_string.has_value()) {
-        out_config.expected.map_sha256 = *expected_string;
-        record_override("expected.map_sha256");
-    }
+
     if (overrides.server_host.has_value() !=
         overrides.server_port.has_value()) {
         error = "--aiserver requires one complete host:port override";
@@ -416,12 +387,6 @@ bool LoadClientConfig(const std::string& yaml_path,
         }
     }
     out_config.viz.output_dir = replay_path.string();
-    static const std::regex map_id_pattern("[A-Za-z0-9_-]+");
-    const bool expected_valid =
-        (!out_config.expected.map_id.has_value() ||
-         std::regex_match(*out_config.expected.map_id, map_id_pattern)) &&
-        (!out_config.expected.map_sha256.has_value() ||
-         IsLowerSha256(*out_config.expected.map_sha256));
     if (out_config.run.client_instance_id.empty() ||
         out_config.run.environment_instance_id.empty() ||
         out_config.env.map_registry_dir.empty() ||
@@ -431,9 +396,8 @@ bool LoadClientConfig(const std::string& yaml_path,
         out_config.run.log_interval <= 0 ||
         out_config.viz.interval <= 0 ||
         out_config.viz.server_port <= 0 ||
-        out_config.viz.server_port > 65535 || !expected_valid) {
-        error = "local instance, registry, network, recording or expected "
-                "assignment config is invalid";
+        out_config.viz.server_port > 65535) {
+        error = "local instance, registry, network or recording config is invalid";
         LOG_ERROR("Config", "%s", error.c_str());
         return false;
     }
@@ -472,13 +436,6 @@ bool LoadClientConfig(const std::string& yaml_path,
     LOG_INFO("Config", "viz: output_dir=%s, interval=%d, server_port=%d",
              out_config.viz.output_dir.c_str(), out_config.viz.interval,
              out_config.viz.server_port);
-    LOG_INFO(
-        "Config",
-        "expected map assignment: map=%s digest=%s",
-        out_config.expected.map_id.has_value()
-            ? out_config.expected.map_id->c_str() : "<none>",
-        out_config.expected.map_sha256.has_value()
-            ? out_config.expected.map_sha256->c_str() : "<none>");
     error.clear();
     return true;
 }

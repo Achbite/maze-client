@@ -34,7 +34,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=build /source/build/maze_client /opt/rl/maze-client/bin/maze_client
 COPY configs /opt/rl/maze-client/configs
-COPY component-contract /opt/rl/component-contract
 COPY maps /opt/rl/maze-client/maps
 COPY run.sh /opt/rl/maze-client/run.sh
 COPY run_replay.sh /opt/rl/maze-client/run_replay.sh

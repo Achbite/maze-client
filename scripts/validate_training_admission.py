@@ -75,8 +75,8 @@ def main() -> None:
     execution = read_exact_object(arguments.execution, EXECUTION_KEYS, "execution receipt")
     if execution["schema_version"] != "rl.component-execution.v1":
         raise ValueError("execution receipt schema_version is incompatible")
-    if execution["component"] != "maze-client":
-        raise ValueError("execution receipt does not belong to maze-client")
+    if execution["component"] != "client":
+        raise ValueError("execution receipt does not belong to the client role")
     component_attempt_id = identity_string(
         execution["component_attempt_id"], "execution component_attempt_id"
     )

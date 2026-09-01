@@ -263,25 +263,7 @@ bool MazeEnv::Step(int agent_id, int action_id, std::string& error) {
     int new_gy = agent.grid_y + dy;
 
     // ---- 2. 可达性检查 ----
-    bool can_move = true;
-
-    // 越界检查
-    if (new_gx < 0 || new_gx >= grid_cols_ || new_gy < 0 || new_gy >= grid_rows_) {
-        can_move = false;
-    }
-
-    // 目标格子是否有墙壁
-    if (can_move && !IsWalkable(new_gx, new_gy)) {
-        can_move = false;
-    }
-
-    // 对角线移动时，检查两个相邻格子是否可通行（防止穿墙角）
-    if (can_move && dx != 0 && dy != 0) {
-        if (!IsWalkable(agent.grid_x + dx, agent.grid_y) ||
-            !IsWalkable(agent.grid_x, agent.grid_y + dy)) {
-            can_move = false;
-        }
-    }
+    const bool can_move = IsActionAvailable(agent, action_id);
 
     // ---- 3. 执行移动 ----
     if (can_move) {
@@ -330,6 +312,19 @@ int MazeEnv::GetAgentNum() const {
     return static_cast<int>(agents_.size());
 }
 
+std::vector<bool> MazeEnv::GetActionMask(int agent_id) const {
+    std::vector<bool> mask(9, false);
+    if (agent_id < 0 || agent_id >= static_cast<int>(agents_.size())) {
+        return mask;
+    }
+    const auto& agent = agents_[static_cast<std::size_t>(agent_id)];
+    for (int action_id = 0; action_id < 9; ++action_id) {
+        mask[static_cast<std::size_t>(action_id)] =
+            IsActionAvailable(agent, action_id);
+    }
+    return mask;
+}
+
 // ---- 连续坐标 → 网格 X ----
 int MazeEnv::ToGridX(float x) const {
     int gx = static_cast<int>(std::floor(x / grid_size_));
@@ -348,6 +343,21 @@ bool MazeEnv::IsWalkable(int gx, int gy) const {
         return false;
     }
     return !blocked_[gy * grid_cols_ + gx];
+}
+
+bool MazeEnv::IsActionAvailable(const AgentInfo& agent, int action_id) const {
+    if (agent.done || action_id < 0 || action_id >= 9) return false;
+    const int dx = kGridActionDirs[action_id][0];
+    const int dy = kGridActionDirs[action_id][1];
+    const int target_x = agent.grid_x + dx;
+    const int target_y = agent.grid_y + dy;
+    if (!IsWalkable(target_x, target_y)) return false;
+    if (dx != 0 && dy != 0 &&
+        (!IsWalkable(agent.grid_x + dx, agent.grid_y) ||
+         !IsWalkable(agent.grid_x, agent.grid_y + dy))) {
+        return false;
+    }
+    return true;
 }
 
 // ---- 是否到达终点网格 ----
