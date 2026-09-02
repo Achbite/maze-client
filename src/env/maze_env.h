@@ -144,8 +144,6 @@ private:
     std::string map_id_;                // 当前地图 ID（来自 JSON 的 map_id 字段）
     std::string loaded_map_path_;       // 实际加载的地图文件完整路径
     int shortest_action_steps_ = -1;
-    std::string map_checksum_sha256_;
-    std::string action_rule_id_ = "maze.action.9-way.no-corner-cut";
     bool has_authoritative_grid_ = false;
 
     // 从 JSON 文件加载地图数据（墙壁、起终点、尺寸、grid_size、grid_count 等）
@@ -156,5 +154,4 @@ private:
     bool CheckTimeout() const;                             // 是否超时
     bool IsActionAvailable(const AgentInfo& agent, int action_id) const;
     int ComputeShortestActionSteps() const;
-    std::string ComputeCanonicalChecksum() const;
 };

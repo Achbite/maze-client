@@ -71,24 +71,13 @@ Client 不接受 workload 参数；实际模式由 AIServer 的 `OpenSession` �
 按 Agent segment 绑定；evaluation 模型也只由 AIServer 内部固定，Client 不接收或校验模型身份。
 
 Client 从 config 默认值或 `RL_ENV_MAP_REGISTRY_DIR` 覆盖的 registry 精确加载 `OpenSession` 下发的
-`<map_id>.json`。跨团队协议只下发 `map_id`；地图文件内容、自描述 checksum、网格合法性和可达性
-由 Client 环境加载边界负责，不回传给 AIServer 重复证明。Client 不再提供 Agent 数断言或覆盖；
+`<map_id>.json`。跨团队协议只下发 `map_id`；地图文件内容、网格合法性和可达性由 Client 环境加载
+边界负责，不计算或回传内容哈希给 AIServer 重复证明。Client 不再提供 Agent 数断言或覆盖；
 实际数量只来自 AIServer `OpenSessionRsp.environment.agent_count`。
 
 `OpenSessionRsp.environment.action_mask_mode` 明确选择 mask 为 `disabled` 或 `required`。关闭时
 `AgentState.action_mask` 必须为空；开启时 Client 只按当前环境生成可执行动作事实并随状态回传，
 不推断 AIServer 的策略或 Learner 训练逻辑。
-
-Infra managed 模式由 `RL_CONFIG_PATH` 标识。Client 连接配对 AIServer 后先发布
-`/run/rl/readiness.json`，随后等待 Node 写入当前 attempt 的
-`/run/rl/training-admission.json`。`run.sh` 将 token 与
-`/run/rl/execution-identity.json` 做精确 schema、Allocation、NodeSession、PodAttempt、
-ComponentAttempt 和 generation 校验，原子发布本进程使用的 gate；C++ Client 看到 gate 后才进入既有
-`OpenSession`。非 managed 模式不要求 Infra admission，行为保持不变。
-
-镜像 healthcheck 按运行模式检查事实：managed 模式检查 `/run/rl/readiness.json`，非 managed
-模式检查 Client 业务进程仍在运行。managed Client 在等待整体训练放行时仍正确表示其“已连接、
-可被 Controller 放行”的 readiness，healthcheck 本身不伪造 training participation。
 
 ## 3. 查看本地回放
 
@@ -144,7 +133,7 @@ RL_PROJECT_IMAGE_TAG=maze-tag-001 bash build_image.sh
 ```
 
 构建入口不计算 source/image/binary 哈希，也不生成第二套 stack identity。它直接由 Dockerfile 编译并
-封装当前 Client、配置和 component contract。同名 tag 允许由后续微调构建直接覆盖；完整镜像引用为
+封装当前 Client、配置、地图与 Replay 工具。同名 tag 允许由后续微调构建直接覆盖；完整镜像引用为
 `rl-training/maze-client:maze-tag-001`。
 
 ## 5. 刷新与清理开发容器

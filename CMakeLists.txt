@@ -36,7 +36,6 @@ set(COMMON_LIBS
     protobuf::libprotobuf
     ${GRPC_LIBRARIES}
     pthread
-    crypto
 )
 
 add_executable(maze_client main/main.cpp ${SHARED_SOURCES} ${PROTO_SOURCES})
@@ -58,7 +57,7 @@ if(BUILD_TESTING)
         ${COMMON_LIBS}
     )
     add_test(
-        NAME client_command_exchange_development_contract
+        NAME client_command_exchange_data_path
         COMMAND client_command_exchange_development_test
             ${CMAKE_CURRENT_SOURCE_DIR}/maps/test/maze_117436372.json
     )

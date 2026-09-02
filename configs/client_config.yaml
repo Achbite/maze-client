@@ -13,6 +13,7 @@ env:
 network:
   server_host: "maze-aiserver"               # AIServer Maze Task gRPC 地址
   server_port: 9002                           # AIServer Maze Task gRPC 端口
+  abort_wait_timeout_ms: 30000                # Abort WAIT 精确请求重试总预算
 
 viz:
   output_dir: "../log/viz"                   # Replay 帧记录目录，相对所选 config

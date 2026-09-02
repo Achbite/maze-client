@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgrpc++-dev \
     protobuf-compiler-grpc \
     libabsl-dev \
-    libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,7 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libabsl20240722 \
     libgrpc++1.51t64 \
     libprotobuf32t64 \
-    libssl3t64 \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
@@ -39,7 +37,6 @@ COPY run.sh /opt/rl/maze-client/run.sh
 COPY run_replay.sh /opt/rl/maze-client/run_replay.sh
 COPY scripts /opt/rl/maze-client/scripts
 COPY tools/viz_player /opt/rl/maze-client/tools/viz_player
-COPY proto/manifest.json /opt/rl/identity/contracts.json
 
 RUN chmod +x /opt/rl/maze-client/bin/maze_client \
     /opt/rl/maze-client/run.sh \

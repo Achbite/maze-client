@@ -7,10 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <deque>
-#include <array>
-#include <iomanip>
 #include <limits>
-#include <openssl/evp.h>
 
 // ---- 从完整配置初始化环境 ----
 bool MazeEnv::Init(const ClientConfig& config) {
@@ -44,8 +41,6 @@ bool MazeEnv::Init(const ClientConfig& config) {
     map_id_.clear();
     loaded_map_path_.clear();
     shortest_action_steps_ = -1;
-    map_checksum_sha256_.clear();
-    action_rule_id_ = "maze.action.9-way.no-corner-cut";
     has_authoritative_grid_ = false;
 
     if (!LoadMapFromFile(map_file_)) {
@@ -85,20 +80,7 @@ bool MazeEnv::Init(const ClientConfig& config) {
         LOG_ERROR("MazeEnv", "地图起点无法到达终点");
         return false;
     }
-    if (shortest_action_steps_ > 0 &&
-        shortest_action_steps_ != computed_shortest) {
-        LOG_ERROR("MazeEnv", "地图 shortest_action_steps 不一致: declared=%d computed=%d",
-                  shortest_action_steps_, computed_shortest);
-        return false;
-    }
     shortest_action_steps_ = computed_shortest;
-    const std::string computed_checksum = ComputeCanonicalChecksum();
-    if (computed_checksum.empty() ||
-        map_checksum_sha256_ != computed_checksum) {
-        LOG_ERROR("MazeEnv", "地图 canonical checksum 不一致: declared=%s computed=%s",
-                  map_checksum_sha256_.c_str(), computed_checksum.c_str());
-        return false;
-    }
 
     // 初始化 Agent
     int agent_num = config.run.agent_num;
@@ -171,55 +153,6 @@ int MazeEnv::ComputeShortestActionSteps() const {
         }
     }
     return -1;
-}
-
-std::string MazeEnv::ComputeCanonicalChecksum() const {
-    if (action_rule_id_ != "maze.action.9-way.no-corner-cut" ||
-        GetGridSizeMicrounits() == 0) {
-        return "";
-    }
-    std::vector<std::uint8_t> payload;
-    const std::string magic("rl.task.maze.map\0", 17);
-    payload.insert(payload.end(), magic.begin(), magic.end());
-    const auto append_u32 = [&](std::uint32_t value) {
-        payload.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xffU));
-        payload.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xffU));
-        payload.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xffU));
-        payload.push_back(static_cast<std::uint8_t>(value & 0xffU));
-    };
-    const auto append_i32 = [&](std::int32_t value) {
-        append_u32(static_cast<std::uint32_t>(value));
-    };
-    append_u32(static_cast<std::uint32_t>(grid_cols_));
-    append_u32(static_cast<std::uint32_t>(grid_rows_));
-    append_u32(GetGridSizeMicrounits());
-    append_i32(start_gx_);
-    append_i32(start_gy_);
-    append_i32(end_gx_);
-    append_i32(end_gy_);
-    append_u32(static_cast<std::uint32_t>(blocked_.size()));
-    for (const bool blocked : blocked_) payload.push_back(blocked ? 1U : 0U);
-    append_u32(static_cast<std::uint32_t>(action_rule_id_.size()));
-    payload.insert(payload.end(), action_rule_id_.begin(), action_rule_id_.end());
-
-    EVP_MD_CTX* context = EVP_MD_CTX_new();
-    if (!context) return "";
-    bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1 &&
-              EVP_DigestUpdate(context, payload.data(), payload.size()) == 1;
-    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-    unsigned int digest_size = 0;
-    if (ok) {
-        ok = EVP_DigestFinal_ex(context, digest.data(), &digest_size) == 1;
-    }
-    EVP_MD_CTX_free(context);
-    if (!ok) return "";
-    std::ostringstream output;
-    output << std::hex << std::setfill('0');
-    for (unsigned int index = 0; index < digest_size; ++index) {
-        output << std::setw(2)
-               << static_cast<unsigned int>(digest[index]);
-    }
-    return output.str();
 }
 
 // ---- 重置所有 Agent 到起点 ----
@@ -429,18 +362,9 @@ bool MazeEnv::LoadMapFromFile(const std::string& filepath) {
                    : text.substr(begin + 1, end - begin - 1);
     };
 
-    map_checksum_sha256_ = findString(content, "checksum_sha256");
-    const int declared_shortest =
-        static_cast<int>(findNumber(content, "shortest_action_steps"));
-    if (declared_shortest > 0) shortest_action_steps_ = declared_shortest;
-    const std::string declared_action_rule =
-        findString(content, "action_rule_id");
-    if (!declared_action_rule.empty()) action_rule_id_ = declared_action_rule;
-    if (content.find("\"version\"") != std::string::npos ||
-        action_rule_id_ != "maze.action.9-way.no-corner-cut" ||
-        findString(content, "blocked_bitmap_encoding") !=
+    if (findString(content, "blocked_bitmap_encoding") !=
             "row-major-u8-0-open-1-blocked") {
-        LOG_WARN("MazeEnv", "地图不符合当前 canonical action/bitmap contract");
+        LOG_WARN("MazeEnv", "地图 blocked bitmap 编码不受支持");
         return false;
     }
 

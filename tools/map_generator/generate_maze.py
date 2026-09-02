@@ -29,7 +29,6 @@ DFS 打通 = 移除两个相邻格子之间的边界线段。
 """
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -128,7 +127,6 @@ ACTION_DIRECTIONS = [
     (0, 1), (1, 1), (1, 0), (1, -1),
     (0, -1), (-1, -1), (-1, 0), (-1, 1),
 ]
-ACTION_RULE_ID = "maze.action.9-way.no-corner-cut"
 
 
 # ============================================================
@@ -574,41 +572,6 @@ def blocked_bitmap_bytes(blocked, grid_cols, grid_rows):
     )
 
 
-def canonical_map_payload(grid_cols, grid_rows, grid_size,
-                          start_gx, start_gy, goal_gx, goal_gy,
-                          bitmap, action_rule_id=ACTION_RULE_ID):
-    """Return the selected cross-language canonical byte stream."""
-    import struct
-
-    rule = action_rule_id.encode("utf-8")
-    grid_size_microunits = int(round(float(grid_size) * 1_000_000.0))
-    if not (0 < grid_size_microunits <= 0xFFFFFFFF):
-        raise ValueError("grid_size does not fit grid_size_microunits")
-    return b"".join(
-        (
-            b"rl.task.maze.map\0",
-            struct.pack(">III", grid_cols, grid_rows,
-                        grid_size_microunits),
-            struct.pack(">iiii", start_gx, start_gy, goal_gx, goal_gy),
-            struct.pack(">I", len(bitmap)),
-            bitmap,
-            struct.pack(">I", len(rule)),
-            rule,
-        )
-    )
-
-
-def canonical_map_checksum(grid_cols, grid_rows, grid_size,
-                           start_gx, start_gy, goal_gx, goal_gy,
-                           bitmap, action_rule_id=ACTION_RULE_ID):
-    payload = canonical_map_payload(
-        grid_cols, grid_rows, grid_size,
-        start_gx, start_gy, goal_gx, goal_gy,
-        bitmap, action_rule_id,
-    )
-    return hashlib.sha256(payload).hexdigest()
-
-
 # ============================================================
 # 随机起终点生成
 # ============================================================
@@ -855,12 +818,6 @@ def generate_map(seed, grid_dim, grid_size, wall_thickness, extra_open_ratio,
     end_pos = {"x": round((end_gx + 0.5) * out_grid_size, 2), "y": round((end_gy + 0.5) * out_grid_size, 2)}
 
     output_grid_size = round(out_grid_size, 2)
-    checksum = canonical_map_checksum(
-        out_dim, out_dim, output_grid_size,
-        start_gx, start_gy, end_gx, end_gy,
-        bitmap,
-    )
-
     # 11. 组装地图数据。walls 仅供 Replay；blocked_bitmap 是碰撞事实源。
     map_data = {
         "map_id": f"maze_{seed}",
@@ -876,11 +833,8 @@ def generate_map(seed, grid_dim, grid_size, wall_thickness, extra_open_ratio,
         "end_pos": end_pos,
         "start_grid": {"x": start_gx, "y": start_gy},
         "goal_grid": {"x": end_gx, "y": end_gy},
-        "action_rule_id": ACTION_RULE_ID,
-        "shortest_action_steps": path_length if reachable else -1,
         "blocked_bitmap_encoding": "row-major-u8-0-open-1-blocked",
         "blocked_bitmap_hex": bitmap.hex(),
-        "checksum_sha256": checksum,
         "wall_count": len(wall_segments),
         "walls": wall_segments
     }

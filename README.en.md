@@ -84,31 +84,16 @@ validates model identity.
 
 Client loads the `OpenSession`-selected `<map_id>.json` exactly from the config
 default or `RL_ENV_MAP_REGISTRY_DIR`. The cross-team protocol sends only
-`map_id`; map-file content, its self-described checksum, grid validity, and
-reachability belong to Client's environment-load boundary and are not echoed to
-AIServer as a second proof. Client has no Agent-count assertion or override; the
+`map_id`; map-file content, grid validity, and reachability belong to Client's
+environment-load boundary. Client computes or
+echoes no content hash to AIServer as a second proof. Client has no Agent-count
+assertion or override; the
 actual count comes only from AIServer `OpenSessionRsp.environment.agent_count`.
 
 `OpenSessionRsp.environment.action_mask_mode` explicitly selects `disabled` or
 `required`. When disabled, `AgentState.action_mask` must be empty. When required,
 Client reports only the actions executable in the current environment and does
 not infer AIServer policy or Learner training behavior.
-
-Infra managed mode is selected by `RL_CONFIG_PATH`. After connecting to its
-paired AIServer, Client first publishes `/run/rl/readiness.json` and waits for
-the owning Node to write `/run/rl/training-admission.json` for the current
-attempt. `run.sh` validates that token exactly against
-`/run/rl/execution-identity.json`, including the schema, Allocation,
-NodeSession, PodAttempt, ComponentAttempt, and generation. It atomically
-publishes the process gate, and the C++ Client enters the existing OpenSession
-only after that gate appears. Unmanaged execution does not require Infra
-admission and retains its existing behavior.
-
-The image healthcheck follows the mode boundary: managed execution checks
-`/run/rl/readiness.json`, while unmanaged execution checks that the Client
-business process is still running. A managed Client can therefore report that
-it is connected and admissible while waiting for the topology-wide release;
-the healthcheck does not claim training participation.
 
 ## 3. View a local replay
 
@@ -173,7 +158,7 @@ RL_PROJECT_IMAGE_TAG=maze-tag-001 bash build_image.sh
 
 The build entrypoint does not compute source, image, or binary hashes and does
 not create a second stack identity. The Dockerfile compiles and packages the
-current Client, configuration, and component contract. A later tuning build may
+current Client, configuration, maps, and Replay tools. A later tuning build may
 overwrite the same tag; the full image reference is
 `rl-training/maze-client:maze-tag-001`.
 

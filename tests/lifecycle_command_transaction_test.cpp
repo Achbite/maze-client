@@ -1,4 +1,5 @@
 #include "config/config_loader.h"
+#include "grpc/abort_episode_transaction.h"
 #include "grpc/grpc_client.h"
 #include "grpc/lifecycle_command_transaction.h"
 
@@ -40,6 +41,34 @@ public:
 
 private:
     maze::UpdateReq request_;
+};
+
+class AbortWaitMazeTaskService final : public maze::MazeTaskService::Service {
+public:
+    grpc::Status AbortEpisode(
+        grpc::ServerContext*,
+        const maze::AbortEpisodeReq* request,
+        maze::AbortEpisodeRsp* response) override {
+        requests_.push_back(request->SerializeAsString());
+        auto* reply = response->mutable_reply();
+        reply->set_error_code(maze::COMMAND_ERROR_CODE_UNSPECIFIED);
+        if (requests_.size() == 1) {
+            reply->set_result(maze::COMMAND_RESULT_WAIT);
+            reply->set_applied_sequence(request->command().sequence() - 1);
+            reply->set_phase(maze::SESSION_PHASE_EPISODE_RUNNING);
+            response->mutable_wait()->set_retry_after_ms(1);
+        } else {
+            reply->set_result(maze::COMMAND_RESULT_APPLIED);
+            reply->set_applied_sequence(request->command().sequence());
+            reply->set_phase(maze::SESSION_PHASE_ABORTED);
+        }
+        return grpc::Status::OK;
+    }
+
+    const std::vector<std::string>& requests() const { return requests_; }
+
+private:
+    std::vector<std::string> requests_;
 };
 
 maze::AgentState* AddCurrentAgent(
@@ -132,12 +161,60 @@ void TestModelActionExecutionReceipt(const std::string& map_path) {
     server->Shutdown();
 }
 
+void TestAbortWaitRetriesExactRequest() {
+    AbortWaitMazeTaskService service;
+    int port = 0;
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort(
+        "127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+    Require(server != nullptr && port > 0,
+            "start the simulated AbortEpisode endpoint");
+
+    GrpcClient client;
+    Require(client.Connect("127.0.0.1", port),
+            "Client connects to the simulated AbortEpisode endpoint");
+    maze_client::LifecycleCursor lifecycle;
+    lifecycle.session_id = "session-abort-test";
+    lifecycle.episode_id = "episode-abort-test";
+    lifecycle.session_epoch = 1;
+    lifecycle.next_sequence = 7;
+    lifecycle.phase = maze::SESSION_PHASE_EPISODE_RUNNING;
+    maze::AbortEpisodeReq request;
+    maze_client::FillCommand(lifecycle, request.mutable_command());
+    request.set_reason(maze::MAZE_TERMINATION_REASON_CLIENT_ABORT);
+    request.set_message("test abort");
+    const std::string expected_request = request.SerializeAsString();
+    maze::AbortEpisodeRsp response;
+    bool outcome_unknown = true;
+
+    Require(maze_client::ApplyAbortEpisode(
+                client, lifecycle, request, response,
+                std::chrono::milliseconds(100), outcome_unknown),
+            "Client applies AbortEpisode after a valid WAIT");
+    Require(!outcome_unknown,
+            "valid WAIT retry leaves no unknown lifecycle outcome");
+    Require(service.requests().size() == 2,
+            "AIServer receives one WAIT attempt and one applied attempt");
+    Require(service.requests()[0] == expected_request &&
+                service.requests()[1] == expected_request,
+            "Client retries the exact AbortEpisode request bytes");
+    Require(lifecycle.next_sequence == 8 &&
+                lifecycle.phase == maze::SESSION_PHASE_ABORTED,
+            "Client commits the lifecycle cursor only after APPLIED");
+
+    client.Disconnect();
+    server->Shutdown();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     Require(argc == 2, "usage: client_command_exchange_development_test MAP");
     TestModelActionExecutionReceipt(argv[1]);
-    std::cout << "client_command_exchange_development_contract: PASS"
+    TestAbortWaitRetriesExactRequest();
+    std::cout << "client_command_exchange_data_path: PASS"
               << std::endl;
     return 0;
 }

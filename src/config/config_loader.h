@@ -34,6 +34,7 @@ struct EnvConfig {
 struct NetworkConfig {
     std::string server_host = "127.0.0.1";  // AIServer 地址
     int         server_port = 9002;          // AIServer gRPC 端口
+    int         abort_wait_timeout_ms = 30000;
 };
 
 // ---- 可视化参数（帧数据记录 + HTTP 回放服务）----

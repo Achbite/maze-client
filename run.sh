@@ -8,13 +8,10 @@ if [ -x "${repo_dir}/bin/maze_client" ]; then
     default_client_bin="${repo_dir}/bin/maze_client"
 fi
 client_bin="${RL_CLIENT_BIN:-${default_client_bin}}"
-training_admission_path="/run/rl/training-admission.json"
-execution_identity_path="/run/rl/execution-identity.json"
-training_admitted_marker="/run/rl/client-training-admitted"
 managed=0
 if [ "${RL_INFRA_MANAGED:-}" = "true" ]; then
     managed=1
-    rm -f /run/rl/readiness.json /run/rl/client-managed-ready "${training_admitted_marker}"
+    rm -f /run/rl/readiness.json /run/rl/client-managed-ready
 elif [ -n "${RL_INFRA_MANAGED:-}" ]; then
     echo "RL_INFRA_MANAGED must be exactly true when supplied" >&2
     exit 2
@@ -86,7 +83,7 @@ shutdown() {
     terminate_process "${client_pid}" 4
     client_pid=""
     if [ "${managed}" -eq 1 ]; then
-        rm -f /run/rl/readiness.json /run/rl/client-managed-ready "${training_admitted_marker}"
+        rm -f /run/rl/readiness.json /run/rl/client-managed-ready
     fi
 }
 
@@ -128,29 +125,6 @@ if [ "${managed}" -eq 1 ]; then
         --fact grpc_transport=connected \
         --fact aiserver_alias="${aiserver_alias}"
 
-    while kill -0 "${client_pid}" 2>/dev/null; do
-        if [ -s "${training_admission_path}" ]; then
-            python3 scripts/validate_training_admission.py \
-                --execution "${execution_identity_path}" \
-                --token "${training_admission_path}" \
-                --marker "${training_admitted_marker}"
-            break
-        fi
-        sleep 0.1
-    done
-    if [ ! -s "${training_admitted_marker}" ]; then
-        if wait "${client_pid}"; then
-            client_status=0
-        else
-            client_status=$?
-        fi
-        client_pid=""
-        echo "Client exited before receiving exact training admission" >&2
-        if [ "${client_status}" -eq 0 ]; then
-            client_status=1
-        fi
-        exit "${client_status}"
-    fi
     if wait "${client_pid}"; then
         client_status=0
     else
