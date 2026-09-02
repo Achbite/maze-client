@@ -206,6 +206,7 @@ bool LoadClientConfig(const std::string& yaml_path,
         "env.map_registry_dir",
         "network.server_host",
         "network.server_port",
+        "network.abort_wait_timeout_ms",
         "viz.output_dir",
         "viz.interval",
         "viz.server_port",
@@ -225,6 +226,7 @@ bool LoadClientConfig(const std::string& yaml_path,
         {"env", "map_registry_dir"},
         {"network", "server_host"},
         {"network", "server_port"},
+        {"network", "abort_wait_timeout_ms"},
         {"viz", "output_dir"},
         {"viz", "interval"},
         {"viz", "server_port"},
@@ -256,6 +258,8 @@ bool LoadClientConfig(const std::string& yaml_path,
     }
     out_config.network.server_port =
         SafeInt(FindValue(entries, "network", "server_port"), 9002);
+    out_config.network.abort_wait_timeout_ms = SafeInt(
+        FindValue(entries, "network", "abort_wait_timeout_ms"), 30000);
 
     // --- viz ---
     std::string viz_output_dir = FindValue(entries, "viz", "output_dir");
@@ -393,6 +397,8 @@ bool LoadClientConfig(const std::string& yaml_path,
         out_config.network.server_host.empty() ||
         out_config.network.server_port <= 0 ||
         out_config.network.server_port > 65535 ||
+        out_config.network.abort_wait_timeout_ms <= 0 ||
+        out_config.network.abort_wait_timeout_ms > 300000 ||
         out_config.run.log_interval <= 0 ||
         out_config.viz.interval <= 0 ||
         out_config.viz.server_port <= 0 ||
@@ -431,8 +437,9 @@ bool LoadClientConfig(const std::string& yaml_path,
              out_config.run.log_interval);
     LOG_INFO("Config", "env: map_registry_dir=%s",
              out_config.env.map_registry_dir.c_str());
-    LOG_INFO("Config", "network: %s:%d",
-             out_config.network.server_host.c_str(), out_config.network.server_port);
+    LOG_INFO("Config", "network: %s:%d abort_wait_timeout_ms=%d",
+             out_config.network.server_host.c_str(), out_config.network.server_port,
+             out_config.network.abort_wait_timeout_ms);
     LOG_INFO("Config", "viz: output_dir=%s, interval=%d, server_port=%d",
              out_config.viz.output_dir.c_str(), out_config.viz.interval,
              out_config.viz.server_port);

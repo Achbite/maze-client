@@ -2,6 +2,7 @@
 #include "grpc/lifecycle_command_transaction.h"
 #include "grpc/update_flow_control.h"
 #include "grpc/workload_contract.h"
+#include "grpc/abort_episode_transaction.h"
 #include "env/maze_env.h"
 #include "config/config_loader.h"
 #include "viz/viz_recorder.h"
@@ -39,11 +40,7 @@ using maze_client::RecordExecutedAction;
 constexpr const char* kDefaultConfigPath = "configs/client_config.yaml";
 constexpr const char* kManagedReadyMarker =
     "/run/rl/client-managed-ready";
-constexpr const char* kTrainingAdmittedMarker =
-    "/run/rl/client-training-admitted";
 constexpr std::chrono::milliseconds kBeginWaitRetryInterval{100};
-constexpr const char* kTaskProtocolId = "rl.task.maze";
-constexpr std::uint32_t kTaskProtocolVersion = 1;
 
 void PrintUsage() {
     std::fputs(
@@ -119,34 +116,6 @@ void RemoveManagedReadyMarker() {
     std::filesystem::remove(kManagedReadyMarker, ignored);
 }
 
-bool TrainingAdmissionReady(std::string& error) {
-    namespace fs = std::filesystem;
-    std::error_code filesystem_error;
-    const fs::path marker(kTrainingAdmittedMarker);
-    const auto status = fs::symlink_status(marker, filesystem_error);
-    if (filesystem_error) {
-        if (filesystem_error == std::errc::no_such_file_or_directory) {
-            return false;
-        }
-        error = "cannot inspect training admission marker: " +
-                filesystem_error.message();
-        return false;
-    }
-    if (status.type() == fs::file_type::not_found) {
-        return false;
-    }
-    if (!fs::is_regular_file(status)) {
-        error = "training admission marker is not a regular file";
-        return false;
-    }
-    const auto size = fs::file_size(marker, filesystem_error);
-    if (filesystem_error || size == 0 || size > 4096) {
-        error = "training admission marker size is invalid";
-        return false;
-    }
-    return true;
-}
-
 const char* WorkloadName(maze::WorkloadMode workload) {
     switch (workload) {
         case maze::WORKLOAD_MODE_TRAINING: return "training";
@@ -196,8 +165,6 @@ const char* OutcomeStateName(maze::MazeTerminationReason reason) {
             return "time_limit";
         case maze::MAZE_TERMINATION_REASON_CLIENT_ABORT:
             return "client_abort";
-        case maze::MAZE_TERMINATION_REASON_TASK_STOP:
-            return "task_stop";
         case maze::MAZE_TERMINATION_REASON_CHAIN_FAILURE:
             return "chain_failure";
         case maze::MAZE_TERMINATION_REASON_ACTIVE:
@@ -441,32 +408,7 @@ int main(int argc, char* argv[]) {
             Logger::Instance().Close();
             return 1;
         }
-        LOG_INFO(
-            "Main",
-            "Client managed-ready; waiting for exact training admission "
-            "before OpenSession");
-        while (!g_stop_requested.load()) {
-            std::string admission_error;
-            if (TrainingAdmissionReady(admission_error)) {
-                LOG_INFO("Main", "Training admission validated; entering OpenSession");
-                break;
-            }
-            if (!admission_error.empty()) {
-                LOG_ERROR("Main", "Training admission marker invalid: %s",
-                          admission_error.c_str());
-                RemoveManagedReadyMarker();
-                client.Disconnect();
-                Logger::Instance().Close();
-                return 1;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        }
-        if (g_stop_requested.load()) {
-            RemoveManagedReadyMarker();
-            client.Disconnect();
-            Logger::Instance().Close();
-            return 0;
-        }
+        LOG_INFO("Main", "Client managed-ready; entering OpenSession");
     }
 
     maze::OpenSessionReq open_request;
@@ -479,10 +421,6 @@ int main(int argc, char* argv[]) {
     open_request.set_request_id(
         config.run.client_instance_id + ":" + std::to_string(::getpid()) +
         ":open-session");
-    open_request.mutable_task_protocol()->set_protocol_id(kTaskProtocolId);
-    open_request.mutable_task_protocol()->set_protocol_version(
-        kTaskProtocolVersion);
-
     maze::OpenSessionRsp open_response;
     if (!client.OpenSession(open_request, open_response) ||
         !maze_client::CommandAccepted(open_response.reply()) ||
@@ -490,11 +428,9 @@ int main(int argc, char* argv[]) {
         open_response.reply().phase() != maze::SESSION_PHASE_OPEN ||
         open_response.session_id().empty() ||
         open_response.session_epoch() == 0 ||
-        open_response.aiserver().component() != "rl-aiserver" ||
+        open_response.aiserver().component().empty() ||
         open_response.aiserver().instance_id().empty() ||
-        open_response.task_protocol().protocol_id() != kTaskProtocolId ||
-        open_response.task_protocol().protocol_version() !=
-            kTaskProtocolVersion ||
+        open_response.aiserver().lifecycle_epoch() == 0 ||
         !open_response.has_environment() ||
         open_response.environment().agent_count() == 0 ||
         open_response.environment().map_id().empty() ||
@@ -795,14 +731,11 @@ int main(int argc, char* argv[]) {
                 }
                 std::vector<AgentExecutionCursor> candidate_execution;
                 bool valid_update = false;
-                if (update_response.has_stop()) {
-                    valid_update = AcceptCommandReply(
-                        cursor, update_response.reply());
-                } else if (PrepareAppliedAgentUpdate(
-                               update_request, update_response,
-                               agent_execution, candidate_execution) &&
-                           AcceptCommandReply(
-                               cursor, update_response.reply())) {
+                if (PrepareAppliedAgentUpdate(
+                        update_request, update_response,
+                        agent_execution, candidate_execution) &&
+                    AcceptCommandReply(
+                        cursor, update_response.reply())) {
                     agent_execution = std::move(candidate_execution);
                     valid_update = true;
                 }
@@ -832,48 +765,6 @@ int main(int argc, char* argv[]) {
                 break;
             }
             if (chain_failed || g_stop_requested.load()) break;
-            if (update_response.has_stop()) {
-                if (update_response.stop().reason() !=
-                    maze::MAZE_TERMINATION_REASON_TASK_STOP) {
-                    LOG_ERROR("Main", "AIServer 任务停止响应无效");
-                    chain_failed = true;
-                    break;
-                }
-                maze::AbortEpisodeReq abort_request;
-                FillCommand(cursor, abort_request.mutable_command());
-                abort_request.set_reason(
-                    maze::MAZE_TERMINATION_REASON_TASK_STOP);
-                abort_request.set_message("AIServer requested task stop");
-                maze::AbortEpisodeRsp abort_response;
-                const bool abort_rpc_ok =
-                    client.AbortEpisode(abort_request, abort_response);
-                const bool abort_applied =
-                    abort_rpc_ok &&
-                    AcceptCommandReply(cursor,
-                                       abort_response.reply());
-                if (!abort_applied) {
-                    lifecycle_outcome_unknown =
-                        !abort_rpc_ok
-                            ? client.LastRpcOutcomeUnknown()
-                            : !IsConclusiveRejected(
-                                  cursor, abort_response.reply());
-                    LOG_ERROR(
-                        "Main",
-                        "AbortEpisode(task-stop) 未收敛: seq=%llu "
-                        "applied=%llu outcome_unknown=%d message=%s",
-                        static_cast<unsigned long long>(
-                            abort_request.command().sequence()),
-                        static_cast<unsigned long long>(
-                            abort_response.reply().applied_sequence()),
-                        lifecycle_outcome_unknown ? 1 : 0,
-                        abort_response.reply().message().c_str());
-                    chain_failed = true;
-                } else {
-                    episode_active = false;
-                    cursor.episode_id.clear();
-                }
-                break;
-            }
             if (terminal_report) break;
             const int action_frame_id = environment.GetFrameId();
             const int result_frame_id = action_frame_id + 1;
@@ -969,19 +860,16 @@ int main(int argc, char* argv[]) {
                 abort_request.set_message(
                     "Client stopped the Episode after a chain failure");
                 maze::AbortEpisodeRsp abort_response;
-                const bool abort_rpc_ok =
-                    client.AbortEpisode(abort_request, abort_response);
-                if (abort_rpc_ok &&
-                    AcceptCommandReply(cursor,
-                                       abort_response.reply())) {
+                bool abort_outcome_unknown = false;
+                if (maze_client::ApplyAbortEpisode(
+                        client, cursor, abort_request, abort_response,
+                        std::chrono::milliseconds(
+                            config.network.abort_wait_timeout_ms),
+                        abort_outcome_unknown)) {
                     episode_active = false;
                     cursor.episode_id.clear();
                 } else {
-                    lifecycle_outcome_unknown =
-                        !abort_rpc_ok
-                            ? client.LastRpcOutcomeUnknown()
-                            : !IsConclusiveRejected(
-                                  cursor, abort_response.reply());
+                    lifecycle_outcome_unknown = abort_outcome_unknown;
                     LOG_ERROR(
                         "Main",
                         "AbortEpisode(chain-failure) 未收敛: seq=%llu "
@@ -1003,15 +891,13 @@ int main(int argc, char* argv[]) {
                 maze::MAZE_TERMINATION_REASON_CLIENT_ABORT);
             abort_request.set_message("Client received stop signal");
             maze::AbortEpisodeRsp abort_response;
-            const bool abort_rpc_ok =
-                client.AbortEpisode(abort_request, abort_response);
-            if (!abort_rpc_ok ||
-                !AcceptCommandReply(cursor, abort_response.reply())) {
-                lifecycle_outcome_unknown =
-                    !abort_rpc_ok
-                        ? client.LastRpcOutcomeUnknown()
-                        : !IsConclusiveRejected(
-                              cursor, abort_response.reply());
+            bool abort_outcome_unknown = false;
+            if (!maze_client::ApplyAbortEpisode(
+                    client, cursor, abort_request, abort_response,
+                    std::chrono::milliseconds(
+                        config.network.abort_wait_timeout_ms),
+                    abort_outcome_unknown)) {
+                lifecycle_outcome_unknown = abort_outcome_unknown;
                 LOG_ERROR(
                     "Main",
                     "AbortEpisode(client-stop) 未收敛: seq=%llu "

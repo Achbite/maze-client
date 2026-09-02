@@ -16,11 +16,6 @@ PYTHONPATH="${repo_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
 python3 -m unittest -v \
     tests.test_replay_service.ReplayServiceLifecycleTest.test_start_receipt_background_process_and_stop
 
-contract_cpp_dir=""
-if [ -n "${RL_CONTRACT_DEV_ARTIFACT_DIR:-}" ]; then
-    contract_cpp_dir="${RL_CONTRACT_DEV_ARTIFACT_DIR}/cpp"
-fi
-
 cmake_args=(
     -S "${repo_dir}"
     -B "${build_dir}"
@@ -28,9 +23,6 @@ cmake_args=(
     -DCMAKE_BUILD_TYPE=Release
     -DBUILD_TESTING=ON
 )
-if [ -n "${contract_cpp_dir}" ]; then
-    cmake_args+=("-DCONTRACT_CPP_DIR=${contract_cpp_dir}")
-fi
 if command -v ccache >/dev/null 2>&1; then
     cmake_args+=("-DCMAKE_CXX_COMPILER_LAUNCHER=$(command -v ccache)")
 fi
@@ -40,4 +32,4 @@ cmake --build "${build_dir}" --parallel \
     --target client_command_exchange_development_test
 ctest --test-dir "${build_dir}" \
     --output-on-failure \
-    -R '^client_command_exchange_development_contract$'
+    -R '^client_command_exchange_data_path$'

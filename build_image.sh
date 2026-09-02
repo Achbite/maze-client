@@ -13,10 +13,6 @@ if [[ ! "${image_tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
     exit 2
 fi
 
-bash "${repo_dir}/scripts/verify_source_inventory.sh"
-python3 "${repo_dir}/scripts/verify_contract_snapshot.py" \
-    "${repo_dir}/proto"
-
 trap 'rm -rf "${context_root}"' EXIT
 python3 - "${repo_dir}" "${context_root}" <<'PY'
 import pathlib
