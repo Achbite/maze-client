@@ -1,8 +1,8 @@
 #pragma once
 
-#include "maze_task.grpc.pb.h"
+#include "proto/tasks/maze/task.grpc.pb.h"
 
-#include <grpcpp/grpcpp.h>
+#include "rl_sdk/transport.h"
 #include <memory>
 #include <string>
 
@@ -30,8 +30,6 @@ public:
     bool LastRpcOutcomeUnknown() const;
 
 private:
-    std::shared_ptr<grpc::Channel> channel_;                // gRPC 通道
+    rl_sdk::Transport transport_;
     std::unique_ptr<maze::MazeTaskService::Stub> stub_;
-    bool connected_ = false;
-    bool last_rpc_outcome_unknown_ = false;
 };

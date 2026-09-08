@@ -18,14 +18,16 @@ set(SHARED_SOURCES
 
 set(PROTO_GEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/proto)
 set(PROTO_SOURCES
-    ${PROTO_GEN_DIR}/common.pb.cc
-    ${PROTO_GEN_DIR}/maze_task.pb.cc
-    ${PROTO_GEN_DIR}/maze_task.grpc.pb.cc
+    ${PROTO_GEN_DIR}/common/identity.pb.cc
+    ${PROTO_GEN_DIR}/communication/session.pb.cc
+    ${PROTO_GEN_DIR}/tasks/maze/task.pb.cc
+    ${PROTO_GEN_DIR}/tasks/maze/task.grpc.pb.cc
 )
 
 # --- 公共头文件搜索路径 ---
 set(COMMON_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${PROTO_GEN_DIR}
     ${Protobuf_INCLUDE_DIRS}
     ${GRPC_INCLUDE_DIRS}
@@ -38,9 +40,11 @@ set(COMMON_LIBS
     pthread
 )
 
-add_executable(maze_client main/main.cpp ${SHARED_SOURCES} ${PROTO_SOURCES})
-target_include_directories(maze_client PRIVATE ${COMMON_INCLUDES})
-target_link_libraries(maze_client PRIVATE ${COMMON_LIBS})
+add_library(maze_client_binding STATIC src/task/maze_client_binding.cpp ${SHARED_SOURCES} ${PROTO_SOURCES})
+target_include_directories(maze_client_binding PUBLIC ${COMMON_INCLUDES})
+target_link_libraries(maze_client_binding PUBLIC ${COMMON_LIBS})
+add_executable(maze_client main/main.cpp)
+target_link_libraries(maze_client PRIVATE maze_client_binding)
 
 include(CTest)
 if(BUILD_TESTING)
