@@ -7,16 +7,21 @@ import tempfile
 from pathlib import Path
 
 
-SNAPSHOT_FILES = {
-    "common.proto": "common.proto",
-    "maze_task.proto": "maze_task.proto",
-    "cpp/common.pb.cc": "common.pb.cc",
-    "cpp/common.pb.h": "common.pb.h",
-    "cpp/maze_task.pb.cc": "maze_task.pb.cc",
-    "cpp/maze_task.pb.h": "maze_task.pb.h",
-    "cpp/maze_task.grpc.pb.cc": "maze_task.grpc.pb.cc",
-    "cpp/maze_task.grpc.pb.h": "maze_task.grpc.pb.h",
-}
+SNAPSHOT_FILES = {'proto/common/identity.proto': 'common/identity.proto',
+ 'cpp/proto/common/identity.pb.cc': 'common/identity.pb.cc',
+ 'cpp/proto/common/identity.pb.h': 'common/identity.pb.h',
+ 'proto/communication/session.proto': 'communication/session.proto',
+ 'cpp/proto/communication/session.pb.cc': 'communication/session.pb.cc',
+ 'cpp/proto/communication/session.pb.h': 'communication/session.pb.h',
+ 'proto/tasks/maze/task.proto': 'tasks/maze/task.proto',
+ 'cpp/proto/tasks/maze/task.pb.cc': 'tasks/maze/task.pb.cc',
+ 'cpp/proto/tasks/maze/task.pb.h': 'tasks/maze/task.pb.h',
+ 'cpp/proto/tasks/maze/task.grpc.pb.cc': 'tasks/maze/task.grpc.pb.cc',
+ 'cpp/proto/tasks/maze/task.grpc.pb.h': 'tasks/maze/task.grpc.pb.h',
+ 'cpp/rl_sdk/session.h': 'rl_sdk/session.h',
+ 'cpp/rl_sdk/transport.h': 'rl_sdk/transport.h',
+ 'cpp/rl_sdk/replay_window.h': 'rl_sdk/replay_window.h',
+ 'cpp/rl_sdk/server_command.h': 'rl_sdk/server_command.h'}
 
 
 def require_regular_file(path: Path) -> None:

@@ -27,10 +27,10 @@ public:
                         maze::UpdateRsp* response) override {
         request_ = *request;
         auto* reply = response->mutable_reply();
-        reply->set_result(maze::COMMAND_RESULT_APPLIED);
-        reply->set_error_code(maze::COMMAND_ERROR_CODE_UNSPECIFIED);
+        reply->set_result(rl::session::v1::COMMAND_RESULT_APPLIED);
+        reply->set_error_code(rl::session::v1::COMMAND_ERROR_CODE_UNSPECIFIED);
         reply->set_applied_sequence(request->command().sequence());
-        reply->set_phase(maze::SESSION_PHASE_EPISODE_RUNNING);
+        reply->set_phase(rl::session::v1::SESSION_PHASE_EPISODE_RUNNING);
         auto* action = response->mutable_action_batch()->add_actions();
         action->set_agent_id(0);
         action->set_action_id(maze::MAZE_ACTION_UP_RIGHT);
@@ -51,16 +51,16 @@ public:
         maze::AbortEpisodeRsp* response) override {
         requests_.push_back(request->SerializeAsString());
         auto* reply = response->mutable_reply();
-        reply->set_error_code(maze::COMMAND_ERROR_CODE_UNSPECIFIED);
+        reply->set_error_code(rl::session::v1::COMMAND_ERROR_CODE_UNSPECIFIED);
         if (requests_.size() == 1) {
-            reply->set_result(maze::COMMAND_RESULT_WAIT);
+            reply->set_result(rl::session::v1::COMMAND_RESULT_WAIT);
             reply->set_applied_sequence(request->command().sequence() - 1);
-            reply->set_phase(maze::SESSION_PHASE_EPISODE_RUNNING);
+            reply->set_phase(rl::session::v1::SESSION_PHASE_EPISODE_RUNNING);
             response->mutable_wait()->set_retry_after_ms(1);
         } else {
-            reply->set_result(maze::COMMAND_RESULT_APPLIED);
+            reply->set_result(rl::session::v1::COMMAND_RESULT_APPLIED);
             reply->set_applied_sequence(request->command().sequence());
-            reply->set_phase(maze::SESSION_PHASE_ABORTED);
+            reply->set_phase(rl::session::v1::SESSION_PHASE_ABORTED);
         }
         return grpc::Status::OK;
     }
@@ -108,30 +108,27 @@ void TestModelActionExecutionReceipt(const std::string& map_path) {
     Require(environment.Init(environment_config),
             "initialize the production MazeEnv");
 
-    maze_client::LifecycleCursor lifecycle;
-    lifecycle.session_id = "session-test";
-    lifecycle.episode_id = "episode-test";
-    lifecycle.session_epoch = 1;
-    lifecycle.next_sequence = 1;
-    lifecycle.phase = maze::SESSION_PHASE_EPISODE_RUNNING;
+    rl_sdk::Session session;
+    rl::session::v1::CommandReply opened;
+    opened.set_phase(rl::session::v1::SESSION_PHASE_EPISODE_RUNNING);
+    session.Bind("session-test", 1, opened);
+    session.SetEpisode("episode-test");
     std::vector<maze_client::AgentExecutionCursor> agents(1);
 
     maze::UpdateReq request;
-    maze_client::FillCommand(lifecycle, request.mutable_command());
+    session.Prepare(request);
     request.set_frame_id(0);
     AddCurrentAgent(environment, &request);
     const std::string request_bytes = request.SerializeAsString();
 
     maze::UpdateRsp response;
-    Require(client.Update(request, response),
-            "Client receives the AIServer action response");
     std::vector<maze_client::AgentExecutionCursor> candidate;
-    Require(maze_client::PrepareAppliedAgentUpdate(
-                request, response, agents, candidate) &&
-                maze_client::AcceptCommandReply(
-                    lifecycle, response.reply()) &&
-                response.action_batch().actions_size() == 1,
-            "Client accepts the action for the active Agent");
+    const auto result = session.Exchange(request, response,
+        [&](const auto& req, auto& rsp) { return client.Update(req, rsp); },
+        [&](const auto& req, const auto& rsp) { return maze_client::PrepareAppliedAgentUpdate(req, rsp, agents, candidate); },
+        [](const auto&) { return 0; });
+    Require(result == rl_sdk::CommandOutcome::Applied && response.action_batch().actions_size() == 1,
+            "SDK accepts the typed action for the active Agent");
 
     const AgentInfo before = environment.GetAgent(0);
     std::string error;
@@ -146,7 +143,7 @@ void TestModelActionExecutionReceipt(const std::string& map_path) {
     agents = candidate;
 
     maze::UpdateReq receipt_request;
-    maze_client::FillCommand(lifecycle, receipt_request.mutable_command());
+    session.Prepare(receipt_request);
     receipt_request.set_frame_id(1);
     auto* receipt = AddCurrentAgent(environment, &receipt_request);
     Require(maze_client::AttachExecutedActionReceipt(
@@ -159,6 +156,19 @@ void TestModelActionExecutionReceipt(const std::string& map_path) {
 
     client.Disconnect();
     server->Shutdown();
+}
+
+void TestSdkReportsInitialAndFinalFacts() {
+    int frame = 0;
+    std::vector<int> observations;
+    const auto outcome = rl_sdk::RunEpisode(
+        [&] { return frame; },
+        [&](int fact) { observations.push_back(fact); return rl_sdk::CommandOutcome::Applied; },
+        [&] { return frame == 2; },
+        [&] { ++frame; return true; },
+        [] { return false; });
+    Require(outcome == rl_sdk::CommandOutcome::Applied && observations == std::vector<int>({0, 1, 2}),
+            "SDK submits initial, action results and final facts without an extra final action");
 }
 
 void TestAbortWaitRetriesExactRequest() {
@@ -175,14 +185,15 @@ void TestAbortWaitRetriesExactRequest() {
     GrpcClient client;
     Require(client.Connect("127.0.0.1", port),
             "Client connects to the simulated AbortEpisode endpoint");
-    maze_client::LifecycleCursor lifecycle;
-    lifecycle.session_id = "session-abort-test";
-    lifecycle.episode_id = "episode-abort-test";
-    lifecycle.session_epoch = 1;
-    lifecycle.next_sequence = 7;
-    lifecycle.phase = maze::SESSION_PHASE_EPISODE_RUNNING;
+    rl_sdk::Session session;
+    rl::session::v1::CommandReply open_reply;
+    open_reply.set_phase(rl::session::v1::SESSION_PHASE_EPISODE_RUNNING);
+    open_reply.set_applied_sequence(6);
+    session.Bind("session-abort-test", 1, open_reply);
+    session.SetEpisode("episode-abort-test");
+    const auto& lifecycle = session.cursor();
     maze::AbortEpisodeReq request;
-    maze_client::FillCommand(lifecycle, request.mutable_command());
+    session.Prepare(request);
     request.set_reason(maze::MAZE_TERMINATION_REASON_CLIENT_ABORT);
     request.set_message("test abort");
     const std::string expected_request = request.SerializeAsString();
@@ -190,7 +201,7 @@ void TestAbortWaitRetriesExactRequest() {
     bool outcome_unknown = true;
 
     Require(maze_client::ApplyAbortEpisode(
-                client, lifecycle, request, response,
+                client, session, request, response,
                 std::chrono::milliseconds(100), outcome_unknown),
             "Client applies AbortEpisode after a valid WAIT");
     Require(!outcome_unknown,
@@ -201,7 +212,7 @@ void TestAbortWaitRetriesExactRequest() {
                 service.requests()[1] == expected_request,
             "Client retries the exact AbortEpisode request bytes");
     Require(lifecycle.next_sequence == 8 &&
-                lifecycle.phase == maze::SESSION_PHASE_ABORTED,
+                lifecycle.phase == rl::session::v1::SESSION_PHASE_ABORTED,
             "Client commits the lifecycle cursor only after APPLIED");
 
     client.Disconnect();
@@ -214,6 +225,7 @@ int main(int argc, char** argv) {
     Require(argc == 2, "usage: client_command_exchange_development_test MAP");
     TestModelActionExecutionReceipt(argv[1]);
     TestAbortWaitRetriesExactRequest();
+    TestSdkReportsInitialAndFinalFacts();
     std::cout << "client_command_exchange_data_path: PASS"
               << std::endl;
     return 0;

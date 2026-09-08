@@ -1,7 +1,8 @@
 #pragma once
 
 #include "env/maze_env.h"
-#include "maze_task.pb.h"
+#include "proto/tasks/maze/task.pb.h"
+#include "rl_sdk/session.h"
 
 #include <cstdint>
 #include <optional>
@@ -12,76 +13,6 @@
 namespace maze_client {
 
 namespace task = rl::task::maze::v1;
-
-struct LifecycleCursor {
-    std::string session_id;
-    std::string episode_id;
-    std::uint64_t session_epoch = 0;
-    std::uint64_t next_sequence = 1;
-    task::SessionPhase phase = task::SESSION_PHASE_UNSPECIFIED;
-};
-
-inline void UpdateCursor(LifecycleCursor& cursor,
-                         const task::CommandReply& reply) {
-    cursor.phase = reply.phase();
-}
-
-// Constructing a command is side-effect free. The sequence is committed only
-// after the server proves that this exact command was applied.
-inline void FillCommand(const LifecycleCursor& cursor,
-                        task::CommandIdentity* command) {
-    command->set_session_id(cursor.session_id);
-    command->set_session_epoch(cursor.session_epoch);
-    command->set_sequence(cursor.next_sequence);
-    command->set_episode_id(cursor.episode_id);
-}
-
-inline bool HasConcretePhase(const task::CommandReply& reply) {
-    return reply.phase() >= task::SESSION_PHASE_OPEN &&
-           reply.phase() <= task::SESSION_PHASE_ABORTED;
-}
-
-inline bool CommandAccepted(const task::CommandReply& reply) {
-    return (reply.result() == task::COMMAND_RESULT_APPLIED ||
-            reply.result() == task::COMMAND_RESULT_ALREADY_APPLIED) &&
-           reply.error_code() == task::COMMAND_ERROR_CODE_UNSPECIFIED;
-}
-
-inline bool AcceptCommandReply(LifecycleCursor& cursor,
-                               const task::CommandReply& reply) {
-    const std::uint64_t expected_sequence = cursor.next_sequence;
-    if (!CommandAccepted(reply) ||
-        reply.applied_sequence() != expected_sequence ||
-        !HasConcretePhase(reply)) {
-        return false;
-    }
-    UpdateCursor(cursor, reply);
-    cursor.next_sequence = expected_sequence + 1;
-    return true;
-}
-
-// WAIT is an authoritative proof that this exact command was not applied. It
-// is safe only when the server echoes the committed lifecycle cursor and the
-// last applied sequence; callers must retry the unchanged command bytes.
-inline bool IsCommandWait(const LifecycleCursor& cursor,
-                          const task::CommandReply& reply) {
-    return cursor.next_sequence > 0 &&
-           reply.result() == task::COMMAND_RESULT_WAIT &&
-           reply.error_code() == task::COMMAND_ERROR_CODE_UNSPECIFIED &&
-           reply.applied_sequence() == cursor.next_sequence - 1 &&
-           HasConcretePhase(reply) && reply.phase() == cursor.phase;
-}
-
-// A rejected command is safe to replace with another operation at the same
-// sequence only when the server proves that it committed no lifecycle state.
-inline bool IsConclusiveRejected(const LifecycleCursor& cursor,
-                                 const task::CommandReply& reply) {
-    return cursor.next_sequence > 0 &&
-           reply.result() == task::COMMAND_RESULT_REJECTED &&
-           reply.error_code() != task::COMMAND_ERROR_CODE_UNSPECIFIED &&
-           reply.applied_sequence() == cursor.next_sequence - 1 &&
-           HasConcretePhase(reply) && reply.phase() == cursor.phase;
-}
 
 struct AgentExecutionCursor {
     bool retired = false;
@@ -156,7 +87,7 @@ inline bool PrepareAppliedAgentUpdate(
     std::vector<AgentExecutionCursor>& candidate) {
     if (current.empty() ||
         !response.has_action_batch() ||
-        !CommandAccepted(response.reply()) ||
+        !rl_sdk::CommandAccepted(response.reply()) ||
         request.agents_size() !=
             static_cast<int>(ActiveAgentCount(current))) {
         return false;

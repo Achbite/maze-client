@@ -31,7 +31,6 @@ def ignore_runtime_outputs(directory, names):
                 ".workspace",
                 "_deps",
                 "build",
-                "build-contract-0.3",
                 "log",
                 "logs",
                 "replays",
