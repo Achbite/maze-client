@@ -5,7 +5,7 @@ by this Client checkout. Maze Client always compiles these repository-local
 files and never discovers or mounts an external Contracts artifact.
 
 The snapshot contains `common/identity`, `communication/session`, and
-`tasks/maze/task` sources and C++ bindings, plus the `rl_sdk/` headers. It does
+`maze/maze` sources and C++ bindings, plus the `rl_sdk/` headers. It does
 not include Learner, Sample Pool, Model Distributor or metric transport bindings.
 Generated includes use `proto/...` paths from the repository root.
 

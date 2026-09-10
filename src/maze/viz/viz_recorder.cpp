@@ -1,4 +1,4 @@
-#include "viz/viz_recorder.h"
+#include "maze/viz/viz_recorder.h"
 #include "log/logger.h"
 
 #include <cerrno>

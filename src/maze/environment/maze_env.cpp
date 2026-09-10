@@ -1,5 +1,5 @@
-#include "env/maze_env.h"
-#include "config/config_loader.h"
+#include "maze/environment/maze_env.h"
+#include "maze/config/config_loader.h"
 #include "log/logger.h"
 
 #include <cmath>

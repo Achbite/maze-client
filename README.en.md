@@ -28,6 +28,15 @@ Distributor are staged only into Learner. `rl-contracts` changes the Client and
 AIServer Maze Task Proto only through an explicit protocol-sync command. See
 [rl-framework](https://github.com/Achbite/rl-framework) for the startup order.
 
+Maze-specific code lives in `src/maze/`: `protocol/client_adapter.*` maps Proto fields to the
+environment, `action/action_receipt.h` handles actions and execution receipts, and
+`episode/assignment.h` handles episode assignments. `environment/`, `config/` and `viz/` contain the
+Maze simulation, configuration and replay recording with map assets. `main/main.cpp` owns
+configuration, signals, logging and the SDK connection. The shared SDK's `TaskClient` / `RunSession`
+own RPC and lifecycle handling, with no duplicate transport implementation in this project.
+Proto and its compiled artifacts remain in `proto/maze/` as the only shared wire contract;
+`maze.sdk.pb.h` is generated, and task adapters do not implement gRPC calls.
+
 ## 1. Development container, incremental build, and tests
 
 ```bash
