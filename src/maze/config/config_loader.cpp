@@ -1,4 +1,4 @@
-#include "config/config_loader.h"
+#include "maze/config/config_loader.h"
 #include "log/logger.h"
 
 #include <algorithm>

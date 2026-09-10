@@ -23,6 +23,17 @@ workspace/
 Maze Task Proto 只有在开发者显式执行协议同步时才会更新 Client/AIServer。完整启动顺序参阅
 [rl-framework](https://github.com/Achbite/rl-framework)。
 
+Maze 业务集中在 `src/maze/`，内部按职责分类：`protocol/client_adapter.*` 填充环境 Proto 并
+调用环境，`action/action_receipt.h` 处理动作与执行回执，`episode/assignment.h` 处理分配语义；
+`environment/` 持有 Maze 环境，`config/` 持有配置，`viz/` 持有附带地图文件的回放记录。
+`main/main.cpp` 负责配置、信号、日志与 SDK 连接。通用 RPC 与会话流程继续依赖公共 SDK 的
+`TaskClient` 和 `RunSession`，本仓不另建一份通信实现。任务 Proto 及编译产物保留在
+`proto/maze/`。
+
+双方唯一共同维护的通信合同是 Proto 与其编译产物。`maze.sdk.pb.h` 由 Proto Service descriptor
+自动生成，任务中不维护手写 Protocol 类型表或 gRPC Stub 调用。任务 Adapter 继续由本项目维护，
+无需与 AIServer 共享源码。新一局由 AIServer 的 EpisodeAssignment 驱动环境 Reset。
+
 ## 1. 开发容器、增量构建与测试
 
 ```bash

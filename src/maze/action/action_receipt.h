@@ -1,7 +1,7 @@
 #pragma once
 
-#include "env/maze_env.h"
-#include "proto/tasks/maze/task.pb.h"
+#include "maze/environment/maze_env.h"
+#include "proto/maze/maze.pb.h"
 #include "rl_sdk/session.h"
 
 #include <cstdint>

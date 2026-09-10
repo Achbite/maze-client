@@ -172,7 +172,6 @@ CommandOutcome RunSession(Binding& binding) {
         if (binding.Complete()) return finish(CommandOutcome::Applied);
         result = binding.RunEpisode();
         if (result != CommandOutcome::Applied) return finish(result);
-        if (binding.Stopped()) return finish(CommandOutcome::Stopped);
         result = binding.End();
         if (result != CommandOutcome::Applied) return finish(result);
     }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "proto/tasks/maze/task.pb.h"
+#include "proto/maze/maze.pb.h"
 
 namespace maze_client {
 
