@@ -206,6 +206,15 @@ void TestModelActionExecutionReceipt(const std::string& map_path) {
     Require(received.SerializeAsString() == request_bytes,
             "the simulated AIServer receives the Client Update unchanged");
 
+    Require(client.Update(receipt_request, response,
+        [&](const auto& req, const auto& rsp) {
+            return maze_client::PrepareAppliedAgentUpdate(req, rsp, agents, candidate);
+        }) == rl_sdk::CommandOutcome::Applied,
+        "the next Update actually delivers and confirms the action execution receipt");
+    Require(service.request().frame_id() == 1 && service.request().agents(0).has_executed_action_id() &&
+            service.request().agents(0).executed_action_id() == receipt->executed_action_id(),
+            "service received the real executed action, not just a local request object");
+
     client.Disconnect();
     server->Shutdown();
 }
@@ -279,6 +288,124 @@ void TestAbortWaitRetriesExactRequest() {
     server->Shutdown();
 }
 
+class UpdateWaitService final : public SessionMazeTaskService {
+public:
+    std::vector<std::string> requests;
+    grpc::Status Update(grpc::ServerContext*, const maze::UpdateReq* req, maze::UpdateRsp* rsp) override {
+        requests.push_back(req->SerializeAsString());
+        if (requests.size() == 1) {
+            Reply(req->command().sequence() - 1, rl::session::v1::SESSION_PHASE_EPISODE_RUNNING, rsp->mutable_reply());
+            rsp->mutable_reply()->set_result(rl::session::v1::COMMAND_RESULT_WAIT);
+            rsp->mutable_wait()->set_retry_after_ms(1);
+        } else {
+            Reply(req->command().sequence(), rl::session::v1::SESSION_PHASE_EPISODE_RUNNING, rsp->mutable_reply());
+            auto* action = rsp->mutable_action_batch()->add_actions();
+            action->set_agent_id(0);
+            action->set_action_id(maze::MAZE_ACTION_RIGHT);
+        }
+        return grpc::Status::OK;
+    }
+};
+
+void TestUpdateWaitPreservesFacts() {
+    UpdateWaitService service;
+    grpc::ServerBuilder builder;
+    int port = 0;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&service);
+    auto server = builder.BuildAndStart();
+    Require(server && port, "start Update WAIT service");
+    Client client;
+    Begin(client, port);
+    const auto sequence = client.cursor().next_sequence;
+    maze::UpdateReq req;
+    req.set_frame_id(7);
+    req.add_agents()->set_executed_action_id(maze::MAZE_ACTION_LEFT);
+    maze::UpdateRsp rsp;
+    int applied_payloads = 0;
+    Require(client.Update(req, rsp, [&](const auto&, const auto&) { ++applied_payloads; return true; }) ==
+                rl_sdk::CommandOutcome::Applied && applied_payloads == 1,
+            "WAIT produces no applied environment update");
+    Require(service.requests.size() == 2 && service.requests.front() == service.requests.back() &&
+                client.cursor().next_sequence == sequence + 1,
+            "Update retries identical frame and receipt, commits sequence once");
+    server->Shutdown();
+    server->Wait();
+}
+
+class FailureService final : public SessionMazeTaskService {
+public:
+    bool transport_failure = false, abort_failure = false;
+    int aborts = 0;
+    grpc::Status Update(grpc::ServerContext*, const maze::UpdateReq* req, maze::UpdateRsp* rsp) override {
+        if (transport_failure) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "original-wire-cause");
+        Reply(req->command().sequence() - 1, rl::session::v1::SESSION_PHASE_EPISODE_RUNNING, rsp->mutable_reply());
+        rsp->mutable_reply()->set_result(rl::session::v1::COMMAND_RESULT_REJECTED);
+        rsp->mutable_reply()->set_message("original-task-cause");
+        rsp->mutable_reply()->set_error_code(rl::session::v1::COMMAND_ERROR_CODE_STATE_CONFLICT);
+        return grpc::Status::OK;
+    }
+    grpc::Status AbortEpisode(grpc::ServerContext*, const maze::AbortEpisodeReq* req, maze::AbortEpisodeRsp* rsp) override {
+        ++aborts;
+        Reply(req->command().sequence() - (abort_failure ? 1 : 0),
+            abort_failure ? rl::session::v1::SESSION_PHASE_EPISODE_RUNNING : rl::session::v1::SESSION_PHASE_ABORTED,
+            rsp->mutable_reply());
+        if (abort_failure) {
+            rsp->mutable_reply()->set_result(rl::session::v1::COMMAND_RESULT_REJECTED);
+            rsp->mutable_reply()->set_message("cleanup-cause");
+            rsp->mutable_reply()->set_error_code(rl::session::v1::COMMAND_ERROR_CODE_STATE_CONFLICT);
+        }
+        return grpc::Status::OK;
+    }
+};
+
+struct FailureBinding {
+    Client& client;
+    auto Open() { maze::OpenSessionRsp rsp; return client.OpenSession(rsp); }
+    auto Initialize() { maze::InitRsp rsp; return client.Init({}, rsp); }
+    auto Begin() { maze::BeginEpisodeRsp rsp; return client.BeginEpisode(rsp); }
+    auto RunEpisode() { maze::UpdateRsp rsp; return client.Update({}, rsp); }
+    auto End() { maze::EndEpisodeRsp rsp; return client.EndEpisode(rsp); }
+    auto Abort() { maze::AbortEpisodeRsp rsp; return client.AbortEpisode({}, rsp); }
+    auto Close() { maze::CloseSessionRsp rsp; return client.CloseSession(rsp); }
+    bool Active() const { return client.Active(); }
+    bool CanClose() const { return client.CanClose(); }
+    bool Complete() const { return client.Complete(); }
+    bool Stopped() const { return false; }
+};
+
+void TestErrorSurvivesSessionCleanup() {
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        FailureService service;
+        service.abort_failure = scenario == 1;
+        service.transport_failure = scenario == 2;
+        grpc::ServerBuilder builder;
+        int port = 0;
+        builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+        builder.RegisterService(&service);
+        auto server = builder.BuildAndStart();
+        Require(server && port, "start error propagation service");
+        Client client;
+        Require(client.Connect("127.0.0.1:" + std::to_string(port)), "connect error propagation SDK");
+        FailureBinding binding{client};
+        const auto result = rl_sdk::RunSession(binding);
+        if (service.transport_failure) {
+            Require(result == rl_sdk::CommandOutcome::Unknown && service.aborts == 0 && !service.closed &&
+                    client.error().find("original-wire-cause") != std::string::npos &&
+                    client.error().find("3") != std::string::npos,
+                    "Unknown preserves gRPC code and cause without substitute cleanup");
+        } else {
+            Require(result == rl_sdk::CommandOutcome::Rejected && service.aborts == 1 &&
+                    client.error().find("original-task-cause") != std::string::npos,
+                    "RunSession cleanup preserves Rejected, scenario=" + std::to_string(scenario) + ": " + client.error());
+            Require(service.abort_failure ? client.error().find("cleanup-cause") != std::string::npos : service.closed,
+                    "cleanup failure is appended; successful cleanup closes the session");
+        }
+        server->Shutdown();
+        server->Wait();
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -286,6 +413,8 @@ int main(int argc, char** argv) {
     TestModelActionExecutionReceipt(argv[1]);
     TestAbortWaitRetriesExactRequest();
     TestSdkReportsInitialAndFinalFacts();
+    TestUpdateWaitPreservesFacts();
+    TestErrorSurvivesSessionCleanup();
     std::cout << "client_command_exchange_data_path: PASS"
               << std::endl;
     return 0;

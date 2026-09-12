@@ -49,6 +49,10 @@ def sync_sdk(artifact_root: Path, target_root: Path) -> None:
     source = artifact_root / "sdk"
     require_regular_file(source / "CMakeLists.txt")
     require_regular_file(source / "include/rl_sdk/task_client.h")
+    require_regular_file(source / "tools/generate-task")
+    require_regular_file(source / "tools/protoc-gen-rl-sdk")
+    require_regular_file(source / "proto/common/identity.proto")
+    require_regular_file(source / "proto/communication/session.proto")
     target = target_root / "rl_sdk"
     shutil.copytree(source, target, dirs_exist_ok=True)
     # The SDK now has one independent CMake target and include tree.
