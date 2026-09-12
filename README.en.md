@@ -36,6 +36,9 @@ configuration, signals, logging and the SDK connection. The shared SDK's `TaskCl
 own RPC and lifecycle handling, with no duplicate transport implementation in this project.
 Proto and its compiled artifacts remain in `proto/maze/` as the only shared wire contract;
 `maze.sdk.pb.h` is generated, and task adapters do not implement gRPC calls.
+The build uses RL-SDK's `rl_sdk_generate_task` to compile the local `maze.proto`
+and its imports into the build directory. It does not overwrite the synchronized
+source snapshot or require another task-specific Protoc/gRPC build implementation.
 
 ## 1. Development container, incremental build, and tests
 

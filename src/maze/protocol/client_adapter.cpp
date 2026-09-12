@@ -243,14 +243,17 @@ struct MazeClientAdapter::Impl {
         maze::InitRsp init_response;
         const auto init_result = client.Init(std::move(init_request), init_response);
         if (init_result != rl_sdk::CommandOutcome::Applied)
-            LOG_ERROR("Client SDK", "Init failed: %s", init_response.reply().message().c_str());
+            LOG_ERROR("Client SDK", "Init failed: %s", client.error().c_str());
         return init_result;
     }
     rl_sdk::CommandOutcome Begin() {
         maze::BeginEpisodeRsp begin_response;
         const auto result = client.BeginEpisode(begin_response,
             [](const auto&, const auto&) { return true; }, [&] { return Stopped(); });
-        if (result != rl_sdk::CommandOutcome::Applied) return result;
+        if (result != rl_sdk::CommandOutcome::Applied) {
+            LOG_ERROR("Client SDK", "BeginEpisode failed: %s", client.error().c_str());
+            return result;
+        }
         if (begin_response.has_task_complete()) {
             LOG_INFO("Client SDK", "AIServer completed the task");
             return result;
@@ -350,7 +353,7 @@ struct MazeClientAdapter::Impl {
             } else if (update_result != rl_sdk::CommandOutcome::Stopped) {
                 const bool lifecycle_outcome_unknown = update_result == rl_sdk::CommandOutcome::Unknown;
                 LOG_ERROR("Main", "Update failed: outcome_unknown=%d message=%s",
-                          lifecycle_outcome_unknown, update_response.reply().message().c_str());
+                          lifecycle_outcome_unknown, client.error().c_str());
                 chain_failed = true;
             }
             return update_result;
@@ -475,7 +478,10 @@ struct MazeClientAdapter::Impl {
     }
     rl_sdk::CommandOutcome Close() {
         maze::CloseSessionRsp response;
-        return client.CloseSession(response);
+        const auto result = client.CloseSession(response);
+        if (result != rl_sdk::CommandOutcome::Applied)
+            LOG_ERROR("Client SDK", "CloseSession failed: %s", client.error().c_str());
+        return result;
     }
 };
 MazeClientAdapter::MazeClientAdapter(const ClientConfig& config, MazeEnv& environment,

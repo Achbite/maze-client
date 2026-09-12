@@ -28,7 +28,8 @@ Maze 业务集中在 `src/maze/`，内部按职责分类：`protocol/client_adap
 `environment/` 持有 Maze 环境，`config/` 持有配置，`viz/` 持有附带地图文件的回放记录。
 `main/main.cpp` 负责配置、信号、日志与 SDK 连接。通用 RPC 与会话流程继续依赖公共 SDK 的
 `TaskClient` 和 `RunSession`，本仓不另建一份通信实现。任务 Proto 及编译产物保留在
-`proto/maze/`。
+`proto/maze/`。构建通过 RL-SDK 的 `rl_sdk_generate_task` 从本地 `maze.proto` 及其导入文件重新生成
+协议代码到 `build/`，不覆盖已同步的源码快照；无需在环境项目重复实现 Protoc 或 gRPC 的构建规则。
 
 双方唯一共同维护的通信合同是 Proto 与其编译产物。`maze.sdk.pb.h` 由 Proto Service descriptor
 自动生成，任务中不维护手写 Protocol 类型表或 gRPC Stub 调用。任务 Adapter 继续由本项目维护，

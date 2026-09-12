@@ -4,7 +4,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_subdirectory(proto/rl_sdk)
-rl_sdk_add_task(maze_task_protocol "${CMAKE_CURRENT_SOURCE_DIR}" proto/maze/maze)
+rl_sdk_generate_task(maze_task_protocol
+    PROTO proto/maze/maze.proto IMPORT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_library(maze_environment STATIC
     src/maze/environment/maze_env.cpp

@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
+RUN pip install --no-cache-dir protobuf==7.35.1
+
 COPY . /source
 RUN cmake -S /source -B /source/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
